@@ -79,6 +79,24 @@ const TOKEN_REGISTRY: Record<string, {
     address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
     decimals: 18,
   },
+  pepe: {
+    symbol: "PEPE",
+    name: "Pepe",
+    address: "0x6982508145454Ce325dDbE47a25d4ec3d2311933",
+    decimals: 18,
+  },
+  degen: {
+    symbol: "DEGEN",
+    name: "Degen",
+    address: "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+    decimals: 18,
+  },
+  bnkr: {
+    symbol: "BNKR",
+    name: "Bankr",
+    address: "",
+    decimals: 18,
+  },
 };
 
 // ERC20 ABI for balanceOf
@@ -431,12 +449,16 @@ function parseNaturalLanguage(text: string): ParsedIntent {
   }
 
   // Price: "price of eth" or "what's the eth price" or "how much is btc"
+  // If token is not in registry, route to Bankr research instead
   if (lower.includes("price") || lower.match(/how much is (\w+)/)) {
     const priceMatch = lower.match(/(?:price|how much is)\s+(?:of\s+)?(\w+)/i);
-    return {
-      action: "price",
-      token: priceMatch ? priceMatch[1] : "eth",
-    };
+    const pToken = priceMatch ? priceMatch[1] : "eth";
+    const resolved = resolveToken(pToken);
+    if (resolved && resolved.pythFeedId) {
+      return { action: "price", token: pToken };
+    }
+    // Unknown token → route to Bankr research
+    return { action: "research", token: pToken };
   }
 
   // Wrap: "wrap 0.1 eth"
@@ -568,8 +590,8 @@ async function bankrPrompt(prompt: string, threadId?: string): Promise<BankrJobR
       return { success: false, jobId: "", status: "failed", error: "No job ID returned from Bankr" };
     }
 
-    // 2. Poll for results (max 60s)
-    for (let i = 0; i < 30; i++) {
+    // 2. Poll for results (max 120s)
+    for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 2000));
 
       const pollRes = await fetch(`${BANKR_API_URL}/agent/job/${jobId}`, {
