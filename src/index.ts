@@ -16,6 +16,8 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import "dotenv/config";
+import { AutonomousTrader } from "./autonomous.js";
+import { loadMemory, getPerformanceSummary, getOpenPositions, getTradeHistory } from "./memory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1039,13 +1041,181 @@ async function main() {
       }
     });
 
+    // ── AUTONOMOUS TRADER ──────────────────────────────────
+    const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID || "";
+    const notifyOwner = async (message: string) => {
+      if (OWNER_CHAT_ID) {
+        try {
+          await bot.api.sendMessage(OWNER_CHAT_ID, message, { parse_mode: "Markdown" });
+        } catch (err) {
+          console.error("⚠️ Failed to notify owner:", err);
+        }
+      }
+    };
+
+    const trader = new AutonomousTrader(bankrPrompt, notifyOwner);
+    if (isBankrConfigured()) {
+      trader.start();
+    }
+
+    // /autotrade — Toggle auto-trading
+    bot.command("autotrade", async (ctx) => {
+      const text = (ctx.message?.text || "").toLowerCase();
+      if (text.includes("on") || text.includes("enable")) {
+        const msg = trader.toggleAutoTrade(true);
+        await ctx.reply(msg);
+      } else if (text.includes("off") || text.includes("disable")) {
+        const msg = trader.toggleAutoTrade(false);
+        await ctx.reply(msg);
+      } else {
+        const mem = trader.getMemory();
+        await ctx.reply(
+          `🤖 *Auto-Trade: ${mem.settings.autoTradeEnabled ? "ON 🟢" : "OFF 🔴"}*\n\n` +
+          `Use:\n` +
+          `  /autotrade on — Enable auto-buying\n` +
+          `  /autotrade off — Disable auto-buying\n\n` +
+          `When ON, I'll automatically buy tokens that score 60+ during scans.`,
+          { parse_mode: "Markdown" }
+        );
+      }
+    });
+
+    // /scan — Trigger manual market scan
+    bot.command("scan", async (ctx) => {
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured.");
+        return;
+      }
+      await ctx.reply("🔍 Starting market scan... this may take 1-2 minutes");
+      const result = await trader.scanMarket();
+      // scanMarket already notifies, but reply directly too
+      if (!result.startsWith("🔍")) {
+        await ctx.reply(result);
+      }
+    });
+
+    // /positions — Show open positions
+    bot.command("positions", async (ctx) => {
+      const mem = trader.getMemory();
+      const open = getOpenPositions(mem);
+      if (open.length === 0) {
+        await ctx.reply("📭 No open positions. Use /scan to find opportunities!");
+        return;
+      }
+      let msg = `📊 *Open Positions (${open.length})*\n\n`;
+      for (const t of open) {
+        const age = Math.round((Date.now() - t.timestamp) / 60000);
+        msg += `🔹 *${t.symbol}*\n`;
+        msg += `   Amount: ${t.amount} | Entry: ${t.price}\n`;
+        msg += `   Age: ${age}min | ${t.reason.slice(0, 50)}\n\n`;
+      }
+      await ctx.reply(msg, { parse_mode: "Markdown" });
+    });
+
+    // /performance — Show trading performance
+    bot.command("performance", async (ctx) => {
+      const mem = trader.getMemory();
+      await ctx.reply(getPerformanceSummary(mem), { parse_mode: "Markdown" });
+    });
+
+    // /trades — Show trade history
+    bot.command("trades", async (ctx) => {
+      const mem = trader.getMemory();
+      const trades = getTradeHistory(mem, 10);
+      if (trades.length === 0) {
+        await ctx.reply("📭 No trades yet. Use /scan or /snipe to start trading!");
+        return;
+      }
+      let msg = `📜 *Recent Trades (${trades.length})*\n\n`;
+      for (const t of trades) {
+        const emoji = t.status === "open" ? "🔹" : t.status === "closed" ? (parseFloat(t.pnl || "0") > 0 ? "✅" : "❌") : "⚠️";
+        const date = new Date(t.timestamp).toLocaleDateString();
+        msg += `${emoji} *${t.symbol}* — ${t.action.toUpperCase()} ${t.amount}\n`;
+        msg += `   ${date} | ${t.status}${t.pnl ? ` | P&L: ${t.pnl}%` : ""}\n\n`;
+      }
+      await ctx.reply(msg, { parse_mode: "Markdown" });
+    });
+
+    // /settings — View/update trading settings
+    bot.command("settings", async (ctx) => {
+      const text = (ctx.message?.text || "").replace(/^\/settings\s*/i, "").trim();
+      if (!text) {
+        const mem = trader.getMemory();
+        const s = mem.settings;
+        await ctx.reply(
+          `⚙️ *Trading Settings*\n\n` +
+          `Max Market Cap: $${(s.maxMarketCap / 1000).toFixed(0)}k\n` +
+          `Buy Amount: $${s.maxBuyAmount}\n` +
+          `Take Profit: ${s.takeProfitPct}%\n` +
+          `Stop Loss: ${s.stopLossPct}%\n` +
+          `Scan Interval: ${s.scanIntervalMin}min\n` +
+          `Auto-Trade: ${s.autoTradeEnabled ? "ON 🟢" : "OFF 🔴"}\n` +
+          `Max Open Positions: ${s.maxOpenPositions}\n\n` +
+          `*Update:*\n` +
+          `  /settings mcap 50000\n` +
+          `  /settings buy 10\n` +
+          `  /settings tp 150\n` +
+          `  /settings sl 25\n` +
+          `  /settings interval 15\n` +
+          `  /settings maxpos 10`,
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+      const parts = text.split(/\s+/);
+      const key = parts[0]?.toLowerCase();
+      const val = parts[1];
+      if (!val) { await ctx.reply("Usage: /settings <key> <value>"); return; }
+
+      const updates: any = {};
+      if (key === "mcap") updates.maxMarketCap = parseInt(val);
+      else if (key === "buy") updates.maxBuyAmount = val;
+      else if (key === "tp") updates.takeProfitPct = parseFloat(val);
+      else if (key === "sl") updates.stopLossPct = parseFloat(val);
+      else if (key === "interval") updates.scanIntervalMin = parseInt(val);
+      else if (key === "maxpos") updates.maxOpenPositions = parseInt(val);
+      else { await ctx.reply(`Unknown setting: ${key}`); return; }
+
+      const msg = trader.updateSettings(updates);
+      await ctx.reply(`⚙️ ${msg}\n\nUpdated: ${key} = ${val}`);
+    });
+
+    // /polymarket — Trade on Polymarket via Bankr
+    bot.command("polymarket", async (ctx) => {
+      const text = (ctx.message?.text || "").replace(/^\/polymarket\s*/i, "").trim();
+      if (!text) {
+        await ctx.reply(
+          "🎲 *Polymarket Trading*\n\n" +
+          "Bet on prediction markets via Bankr:\n\n" +
+          "  /polymarket What are the top markets?\n" +
+          "  /polymarket Bet $5 on YES for 'Will ETH hit $5k?'\n" +
+          "  /polymarket Show my Polymarket positions\n" +
+          "  /polymarket What's the odds on the US election?",
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured.");
+        return;
+      }
+      await ctx.reply("🎲 Checking Polymarket...");
+      const result = await bankrPrompt(text.includes("polymarket") ? text : `Polymarket: ${text}`);
+      if (result.success) {
+        await ctx.reply(`🎲 *Polymarket*\n\n${result.response}`, { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply(`Polymarket request failed 😅\n\n${result.error}`);
+      }
+    });
+
     // ── /actions ────────────────────────────────────────────
     bot.command("actions", async (ctx) => {
       await ctx.reply(
         "🤖 *AIBINGWA Capabilities:*\n\n" +
         "*Wallet*\n" +
         "💼 /wallet — View address & balances\n" +
-        "💰 /balance — All token balances\n\n" +
+        "💰 /balance — All token balances\n" +
+        "🏦 /bankr\\-balance — Bankr wallet balance\n\n" +
         "*Trading (AgentKit)*\n" +
         "🔄 /trade 5 usdc eth — Swap tokens\n" +
         "🔄 /wrap 0.01 — Wrap ETH to WETH\n" +
@@ -1053,11 +1223,20 @@ async function main() {
         "*Trading (Bankr AI)* 🏦\n" +
         "🎯 /snipe $5 PEPE — Buy tokens\n" +
         "🔍 /research ETH — Market research\n" +
-        "� /trending — Trending tokens on Base\n" +
+        "🔥 /trending — Trending tokens on Base\n" +
         "💎 /lowcap — Low cap gems (<$40k mcap)\n" +
         "🏦 /bankr <prompt> — Any Bankr command\n\n" +
+        "*Autonomous Trading* 🤖\n" +
+        "🔍 /scan — Manual market scan\n" +
+        "⚡ /autotrade on/off — Toggle auto\\-buying\n" +
+        "📊 /positions — Open positions\n" +
+        "📈 /performance — Win rate & P&L\n" +
+        "📜 /trades — Trade history\n" +
+        "⚙️ /settings — View/update settings\n\n" +
+        "*Polymarket* 🎲\n" +
+        "🎲 /polymarket — Prediction market bets\n\n" +
         "*Transfers*\n" +
-        "� /send 10 usdc to vitalik.eth\n\n" +
+        "📤 /send 10 usdc to vitalik.eth\n\n" +
         "*Prices*\n" +
         "📊 /price eth — Token prices\n\n" +
         "*Natural Language*\n" +
@@ -1065,7 +1244,8 @@ async function main() {
         '• "Send 10 USDC to vitalik.eth"\n' +
         '• "Swap 0.01 ETH for USDC"\n' +
         '• "Find low cap gems on Base"\n' +
-        '• "Research PEPE"',
+        '• "Research PEPE"\n' +
+        '• "Show my performance"',
         { parse_mode: "Markdown" }
       );
     });

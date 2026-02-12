@@ -2,3 +2,4 @@ node_modules/
 build/
 .env
 wallet-data.json
+data/
