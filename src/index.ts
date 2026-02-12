@@ -34,7 +34,7 @@ const TOKEN_REGISTRY: Record<string, {
   eth: {
     symbol: "ETH",
     name: "Ethereum",
-    address: "0x0000000000000000000000000000000000000000",
+    address: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
     decimals: 18,
     pythFeedId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
   },
@@ -623,16 +623,26 @@ async function main() {
       if (!fromToken) { await ctx.reply(`❌ Unknown token: ${parts[2]}`); return; }
       if (!toToken) { await ctx.reply(`❌ Unknown token: ${parts[3]}`); return; }
 
-      await ctx.reply(`🔄 Trading ${amount} ${fromToken.symbol} for ${toToken.symbol}...`);
+      await ctx.reply(`🔄 Swapping ${amount} ${fromToken.symbol} → ${toToken.symbol}...`);
       try {
         const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-          fromAssetId: fromToken.address || fromToken.symbol.toLowerCase(),
-          toAssetId: toToken.address || toToken.symbol.toLowerCase(),
-          amount: amount,
+          fromToken: fromToken.address,
+          toToken: toToken.address,
+          fromAmount: amount,
         });
-        await ctx.reply(`✅ Trade Result:\n\n${result}`);
+
+        if (result.includes('"success":false') || result.includes('"error"')) {
+          try {
+            const parsed = JSON.parse(result);
+            if (!parsed.success && parsed.error) {
+              await ctx.reply(`Swap didn't go through 😅\n\n${parsed.error}\n\nMake sure you have enough ${fromToken.symbol}!`);
+              return;
+            }
+          } catch {}
+        }
+        await ctx.reply(`✅ Boom! Swapped ${amount} ${fromToken.symbol} for ${toToken.symbol}!\n\n${result}`);
       } catch (err: any) {
-        await ctx.reply(`❌ Trade failed: ${err.message}`);
+        await ctx.reply(`Swap failed 😬\n\n${err.message}\n\nTry again or check /balance`);
       }
     });
 
@@ -672,18 +682,18 @@ async function main() {
         if (token.symbol === "ETH") {
           result = await executeAction(agent, "WalletActionProvider_native_transfer", {
             to: recipientAddr,
-            value: parseUnits(amount, 18).toString(),
+            value: amount,
           });
         } else {
           result = await executeAction(agent, "ERC20ActionProvider_transfer", {
-            contractAddress: token.address,
-            to: recipientAddr,
+            tokenAddress: token.address,
+            destinationAddress: recipientAddr,
             amount: amount,
           });
         }
-        await ctx.reply(`✅ Send Result:\n\n${result}`);
+        await ctx.reply(`✅ Done! Sent ${amount} ${token.symbol} to ${display}!\n\n${result}`);
       } catch (err: any) {
-        await ctx.reply(`❌ Send failed: ${err.message}`);
+        await ctx.reply(`Send failed 😬\n\n${err.message}\n\nTry again or check /balance`);
       }
     });
 
@@ -759,19 +769,20 @@ async function main() {
             let result: string;
             if (token.symbol === "ETH") {
               result = await executeAction(agent, "WalletActionProvider_native_transfer", {
-                to: addr, value: parseUnits(intent.amount, 18).toString(),
+                to: addr, value: intent.amount,
               });
             } else {
               result = await executeAction(agent, "ERC20ActionProvider_transfer", {
-                contractAddress: token.address, to: addr, amount: intent.amount,
+                tokenAddress: token.address, destinationAddress: addr, amount: intent.amount,
               });
             }
-            await ctx.reply(`✅ Sent!\n\n${result}`);
+            await ctx.reply(`✅ Done! Sent ${intent.amount} ${token.symbol} to ${display}!\n\n${result}`);
           } catch (err: any) {
-            if (err.message.includes('insufficient')) {
+            const msg = err.message || String(err);
+            if (msg.includes('insufficient')) {
               await ctx.reply(`Not enough ${token.symbol} in your wallet 💸\n\nCheck your balance with /balance`);
             } else {
-              await ctx.reply(`Send failed: ${err.message}\n\nTry again or check your balance!`);
+              await ctx.reply(`Send failed 😬\n\n${msg}\n\nTry again or check your balance!`);
             }
           }
           break;
@@ -796,9 +807,9 @@ async function main() {
           await ctx.reply(`🔄 Swapping ${intent.amount} ${from.symbol} → ${to.symbol}...`);
           try {
             const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-              fromAssetId: from.symbol.toLowerCase(),
-              toAssetId: to.symbol.toLowerCase(),
-              amount: intent.amount,
+              fromToken: from.address,
+              toToken: to.address,
+              fromAmount: intent.amount,
             });
             
             // Parse result to check for errors
