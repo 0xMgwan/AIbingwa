@@ -1080,18 +1080,23 @@ async function main() {
       }
     });
 
-    // /scan — Trigger manual market scan
+    // /scan — Trigger manual market scan (non-blocking)
     bot.command("scan", async (ctx) => {
       if (!isBankrConfigured()) {
         await ctx.reply("⚠️ Bankr API not configured.");
         return;
       }
-      await ctx.reply("🔍 Starting market scan... this may take 1-2 minutes");
-      const result = await trader.scanMarket();
-      // scanMarket already notifies, but reply directly too
-      if (!result.startsWith("🔍")) {
-        await ctx.reply(result);
-      }
+      await ctx.reply("🔍 Starting market scan... this may take 1-2 minutes. I'll send results when ready!");
+      // Run scan in background so bot stays responsive
+      trader.scanMarket().then(async (result) => {
+        try {
+          if (!result.startsWith("🔍")) {
+            await ctx.reply(result);
+          }
+        } catch (err) {
+          console.error("⚠️ Failed to send scan result:", err);
+        }
+      }).catch(err => console.error("Scan error:", err));
     });
 
     // /positions — Show open positions

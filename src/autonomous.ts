@@ -62,14 +62,16 @@ export class AutonomousTrader {
     console.log(`   Max mcap: $${this.memory.settings.maxMarketCap}`);
     console.log(`   Buy amount: $${this.memory.settings.maxBuyAmount}`);
 
-    // Run initial scan after 30s (let bot fully start)
-    setTimeout(() => this.scanMarket(), 30000);
-
-    // Periodic market scan
-    this.scanTimer = setInterval(() => this.scanMarket(), scanMs);
+    // No auto-scan on startup — use /scan manually or wait for the periodic timer
+    // Periodic market scan (first scan after the interval, not immediately)
+    this.scanTimer = setInterval(() => {
+      this.scanMarket().catch(err => console.error("Scan error:", err));
+    }, scanMs);
 
     // Periodic position monitoring
-    this.monitorTimer = setInterval(() => this.monitorPositions(), monitorMs);
+    this.monitorTimer = setInterval(() => {
+      this.monitorPositions().catch(err => console.error("Monitor error:", err));
+    }, monitorMs);
   }
 
   stop(): void {
