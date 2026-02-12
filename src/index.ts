@@ -231,19 +231,77 @@ async function getWalletAddress(agent: AgentKit): Promise<string> {
 }
 
 // ============================================================
+// PERSONALITY & CONVERSATIONAL RESPONSES
+// ============================================================
+const GREETINGS = [
+  "Yo! What's good? 🔥 Your favorite blockchain assistant is here. What we doing today — checking bags, making moves, or just vibing?",
+  "Ayyy, what's up! 👋 AIBINGWA in the building. Need me to check your wallet, swap some tokens, or send some bread? Just say the word.",
+  "Hey hey! 🚀 Your on-chain homie is ready. Balances, trades, transfers — whatever you need, I got you. What's the play?",
+  "Sup! 💎 Ready to make some moves on Base. Just tell me what you need — I speak both crypto and human lol",
+  "What's poppin! 🤝 AIBINGWA at your service. Whether it's checking prices, swapping tokens, or sending USDC — I'm locked in. Let's go!",
+];
+
+const CASUAL_RESPONSES: Record<string, string[]> = {
+  thanks: [
+    "Anytime fam! 🤝 That's what I'm here for.",
+    "No worries! Hit me up whenever you need anything else 💪",
+    "Got you! Always ready when you are 🔥",
+  ],
+  good: [
+    "Glad to hear it! 😎 Need anything else?",
+    "Let's keep the momentum going! What's next? 🚀",
+  ],
+  who: [
+    "I'm AIBINGWA — your personal AI blockchain assistant on Base Mainnet 🧠⛓️\n\nI can check balances, swap tokens, send crypto, fetch prices, and more. Think of me as your on-chain co-pilot. Just tell me what you need!",
+  ],
+  gm: [
+    "GM! ☀️ Another day, another opportunity. What are we doing today?",
+    "GM fam! 🌅 Ready to make some moves? Just say the word.",
+  ],
+};
+
+function getRandomResponse(arr: string[]): string {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function isGreeting(text: string): boolean {
+  const greetings = ["hey", "hi", "hello", "yo", "sup", "what's up", "whats up", "wassup", "howdy", "hola", "ayo"];
+  const lower = text.toLowerCase().trim();
+  return greetings.some(g => lower === g || lower.startsWith(g + " ") || lower.startsWith(g + "!") || lower.startsWith(g + ","));
+}
+
+function getCasualResponse(text: string): string | null {
+  const lower = text.toLowerCase().trim();
+  if (lower.match(/^(thanks|thank you|thx|ty|appreciate)/)) return getRandomResponse(CASUAL_RESPONSES.thanks);
+  if (lower.match(/^(good|nice|cool|great|awesome|dope|fire|lit)/)) return getRandomResponse(CASUAL_RESPONSES.good);
+  if (lower.match(/who are you|what are you|about you/)) return getRandomResponse(CASUAL_RESPONSES.who);
+  if (lower.match(/^(gm|good morning)/)) return getRandomResponse(CASUAL_RESPONSES.gm);
+  if (lower.match(/^(gn|good night)/)) return "GN! 🌙 Rest up, we go again tomorrow. Your bags are safe with me 💎";
+  return null;
+}
+
+// ============================================================
 // NATURAL LANGUAGE PARSER
 // ============================================================
 interface ParsedIntent {
-  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "unknown";
+  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "greet" | "casual" | "unknown";
   amount?: string;
   fromToken?: string;
   toToken?: string;
   recipient?: string;
   token?: string;
+  casualResponse?: string;
 }
 
 function parseNaturalLanguage(text: string): ParsedIntent {
   const lower = text.toLowerCase().trim();
+
+  // Greetings first
+  if (isGreeting(lower)) return { action: "greet" };
+
+  // Casual conversation
+  const casual = getCasualResponse(lower);
+  if (casual) return { action: "casual", casualResponse: casual };
 
   // Send / Transfer: "send 10 usdc to vitalik.eth" or "transfer 0.1 eth to 0x123..."
   const sendMatch = lower.match(/(?:send|transfer)\s+(\$?[\d.]+)\s+(\w+)\s+(?:to\s+)(.+)/i);
@@ -370,23 +428,24 @@ async function main() {
 
     // ── /start ──────────────────────────────────────────────
     bot.command("start", async (ctx) => {
+      const name = ctx.from?.first_name || "fam";
       console.log("📨 /start from", ctx.from?.username);
       await ctx.reply(
-        "🚀 *Welcome to AIBINGWA!*\n\n" +
-        "I'm your AI blockchain agent on *Base Mainnet*.\n\n" +
-        "*Commands:*\n" +
-        "💼 /wallet — View wallet address\n" +
-        "💰 /balance — All token balances\n" +
-        "📊 /price eth — Token prices\n" +
-        "🔄 /trade 5 usdc eth — Swap tokens\n" +
-        "📤 /send 10 usdc to vitalik.eth — Send tokens\n" +
-        "🔄 /wrap 0.01 — Wrap ETH to WETH\n" +
-        "📋 /actions — All operations\n\n" +
-        "*Or just type naturally:*\n" +
-        '• "Send 10 USDC to vitalik.eth"\n' +
-        '• "Swap 0.01 ETH for USDC"\n' +
-        '• "What\'s the price of ETH?"\n' +
-        '• "Check my USDC balance"',
+        `� *Yo ${name}! Welcome to AIBINGWA* 🔥\n\n` +
+        `I'm your personal AI blockchain assistant — think of me as your on-chain homie who never sleeps 😤⛓️\n\n` +
+        `I run on *Base Mainnet* and I can:\n\n` +
+        `💰 Check your bags (ETH, USDC, WETH, DAI...)\n` +
+        `🔄 Swap tokens like a DEX pro\n` +
+        `📤 Send crypto to anyone (even ENS names!)\n` +
+        `� Get real-time prices\n` +
+        `� Wrap/unwrap ETH\n\n` +
+        `*Just talk to me like a human:*\n` +
+        `• _"Send 10 USDC to vitalik.eth"_\n` +
+        `• _"Swap 0.01 ETH for USDC"_\n` +
+        `• _"What's my balance?"_\n` +
+        `• _"Price of BTC"_\n\n` +
+        `Or use commands: /wallet /balance /price /trade /send /actions\n\n` +
+        `Let's get it! 🚀`,
         { parse_mode: "Markdown" }
       );
     });
@@ -724,14 +783,24 @@ async function main() {
           break;
         }
 
+        case "greet": {
+          await ctx.reply(getRandomResponse(GREETINGS));
+          break;
+        }
+
+        case "casual": {
+          await ctx.reply(intent.casualResponse || "What's good? 🤝");
+          break;
+        }
+
         case "help": {
           await ctx.reply(
-            "🤖 *AIBINGWA — AI Blockchain Agent*\n\n" +
-            "Just type naturally or use commands:\n\n" +
-            '• "Send 10 USDC to vitalik.eth"\n' +
-            '• "Swap 0.01 ETH for USDC"\n' +
-            '• "What\'s my balance?"\n' +
-            '• "Price of BTC"\n\n' +
+            "� *I got you! Here's what I can do:*\n\n" +
+            "Just talk to me naturally or use commands:\n\n" +
+            `• _"Send 10 USDC to vitalik.eth"_\n` +
+            `• _"Swap 0.01 ETH for USDC"_\n` +
+            `• _"What's my balance?"_\n` +
+            `• _"Price of BTC"_\n\n` +
             "Commands: /wallet /balance /price /trade /send /wrap /unwrap /actions",
             { parse_mode: "Markdown" }
           );
@@ -740,12 +809,13 @@ async function main() {
 
         default: {
           await ctx.reply(
-            "🤖 I didn't understand that. Try:\n\n" +
-            '• "Send 10 USDC to vitalik.eth"\n' +
-            '• "Trade 5 USDC for ETH"\n' +
+            "Hmm, I didn't quite catch that 🤔\n\n" +
+            "Try something like:\n" +
             '• "Check my balance"\n' +
-            '• "Price of ETH"\n\n' +
-            "Or type /actions to see all commands."
+            '• "Price of ETH"\n' +
+            '• "Send 10 USDC to vitalik.eth"\n' +
+            '• "Trade 5 USDC for ETH"\n\n' +
+            "Or hit /actions to see everything I can do!"
           );
         }
       }
