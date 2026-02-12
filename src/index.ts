@@ -631,16 +631,28 @@ async function main() {
           fromAmount: amount,
         });
 
-        if (result.includes('"success":false') || result.includes('"error"')) {
-          try {
-            const parsed = JSON.parse(result);
-            if (!parsed.success && parsed.error) {
-              await ctx.reply(`Swap didn't go through 😅\n\n${parsed.error}\n\nMake sure you have enough ${fromToken.symbol}!`);
-              return;
-            }
-          } catch {}
-        }
-        await ctx.reply(`✅ Boom! Swapped ${amount} ${fromToken.symbol} for ${toToken.symbol}!\n\n${result}`);
+        try {
+          const parsed = JSON.parse(result);
+          if (parsed.success === false) {
+            await ctx.reply(`Swap didn't go through 😅\n\n${parsed.error || 'Unknown error'}\n\nMake sure you have enough ${fromToken.symbol}!`);
+            return;
+          }
+          if (parsed.success === true) {
+            const txHash = parsed.transactionHash || '';
+            const toAmount = parsed.toAmount || 'N/A';
+            const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
+            await ctx.reply(
+              `✅ *Boom! Swap Complete!* 🎉\n\n` +
+              `📤 Sent: ${amount} ${fromToken.symbol}\n` +
+              `📥 Received: ${toAmount} ${toToken.symbol}\n\n` +
+              `🔗 Tx: \`${shortHash}\`\n\n` +
+              `You're a legend! 💪`,
+              { parse_mode: "Markdown" }
+            );
+            return;
+          }
+        } catch {}
+        await ctx.reply(`✅ Swap completed!\n\n${result}`);
       } catch (err: any) {
         await ctx.reply(`Swap failed 😬\n\n${err.message}\n\nTry again or check /balance`);
       }
@@ -691,9 +703,27 @@ async function main() {
             amount: amount,
           });
         }
-        await ctx.reply(`✅ Done! Sent ${amount} ${token.symbol} to ${display}!\n\n${result}`);
+        
+        // Extract transaction hash from result
+        const txMatch = result.match(/0x[a-fA-F0-9]{64}/);
+        const txHash = txMatch ? txMatch[0] : '';
+        const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
+        
+        await ctx.reply(
+          `✅ *Transfer Complete!* 🎉\n\n` +
+          `📤 Sent: ${amount} ${token.symbol}\n` +
+          `📥 To: ${display}\n\n` +
+          `🔗 Tx: \`${shortHash}\`\n\n` +
+          `Funds are on the way! 💸`,
+          { parse_mode: "Markdown" }
+        );
       } catch (err: any) {
-        await ctx.reply(`Send failed 😬\n\n${err.message}\n\nTry again or check /balance`);
+        const msg = err.message || String(err);
+        if (msg.includes('insufficient')) {
+          await ctx.reply(`Not enough ${token.symbol} 💸\n\nCheck your balance with /balance`);
+        } else {
+          await ctx.reply(`Send failed 😬\n\n${msg}\n\nTry again or check /balance`);
+        }
       }
     });
 
@@ -776,7 +806,19 @@ async function main() {
                 tokenAddress: token.address, destinationAddress: addr, amount: intent.amount,
               });
             }
-            await ctx.reply(`✅ Done! Sent ${intent.amount} ${token.symbol} to ${display}!\n\n${result}`);
+            // Extract transaction hash from result
+            const txMatch = result.match(/0x[a-fA-F0-9]{64}/);
+            const txHash = txMatch ? txMatch[0] : '';
+            const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
+            
+            await ctx.reply(
+              `✅ *Transfer Complete!* 🎉\n\n` +
+              `📤 Sent: ${intent.amount} ${token.symbol}\n` +
+              `📥 To: ${display}\n\n` +
+              `🔗 Tx: \`${shortHash}\`\n\n` +
+              `Funds are on the way! 💸`,
+              { parse_mode: "Markdown" }
+            );
           } catch (err: any) {
             const msg = err.message || String(err);
             if (msg.includes('insufficient')) {
@@ -812,19 +854,28 @@ async function main() {
               fromAmount: intent.amount,
             });
             
-            // Parse result to check for errors
-            let resultText = result;
-            if (result.includes('"success":false') || result.includes('"error"')) {
-              try {
-                const parsed = JSON.parse(result);
-                if (!parsed.success && parsed.error) {
-                  await ctx.reply(`Swap didn't go through 😅\n\nReason: ${parsed.error}\n\nMake sure you have enough ${from.symbol} and the market is available!`);
-                  return;
-                }
-              } catch {}
-            }
-            
-            await ctx.reply(`✅ Boom! Swapped ${intent.amount} ${from.symbol} for ${to.symbol}!\n\n${resultText}`);
+            try {
+              const parsed = JSON.parse(result);
+              if (parsed.success === false) {
+                await ctx.reply(`Swap didn't go through 😅\n\n${parsed.error || 'Unknown error'}\n\nMake sure you have enough ${from.symbol}!`);
+                return;
+              }
+              if (parsed.success === true) {
+                const txHash = parsed.transactionHash || '';
+                const toAmount = parsed.toAmount || 'N/A';
+                const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
+                await ctx.reply(
+                  `✅ *Boom! Swap Complete!* 🎉\n\n` +
+                  `📤 Sent: ${intent.amount} ${from.symbol}\n` +
+                  `📥 Received: ${toAmount} ${to.symbol}\n\n` +
+                  `🔗 Tx: \`${shortHash}\`\n\n` +
+                  `You're a legend! 💪`,
+                  { parse_mode: "Markdown" }
+                );
+                return;
+              }
+            } catch {}
+            await ctx.reply(`✅ Swap completed!\n\n${result}`);
           } catch (err: any) {
             const msg = err.message || String(err);
             if (msg.includes('undefined')) {
