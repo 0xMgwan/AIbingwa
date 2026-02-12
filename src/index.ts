@@ -323,9 +323,43 @@ async function main() {
     // /actions command
     bot.command("actions", async (ctx) => {
       const actions = agent.getActions();
-      const list = actions.map((a) => `• \`${a.name}\``).join("\n");
+      
+      // Group and format actions with descriptions
+      const actionDescriptions: Record<string, string> = {
+        "get_wallet_details": "💼 View wallet address and details",
+        "get_balance": "💰 Check token balance",
+        "transfer": "📤 Transfer tokens to another address",
+        "approve": "✅ Approve token spending",
+        "get_allowance": "🔍 Check token allowance",
+        "wrap_eth": "🔄 Wrap ETH to WETH",
+        "unwrap_eth": "🔄 Unwrap WETH to ETH",
+        "fetch_price": "📊 Get token price from Pyth oracle",
+        "swap": "🔀 Swap tokens on DEX",
+        "request_faucet": "💧 Request testnet funds",
+        "list_spend_permissions": "📋 List spend permissions",
+        "use_spend_permission": "💳 Use spend permission",
+      };
+
+      const formattedActions = actions
+        .map((a) => {
+          const actionKey = a.name.toLowerCase();
+          let description = a.description || "Unknown action";
+          
+          // Try to match with our descriptions
+          for (const [key, desc] of Object.entries(actionDescriptions)) {
+            if (actionKey.includes(key)) {
+              description = desc;
+              break;
+            }
+          }
+          
+          return description;
+        })
+        .filter((desc, index, self) => self.indexOf(desc) === index) // Remove duplicates
+        .join("\n");
+
       await ctx.reply(
-        `🤖 *Available Blockchain Operations (${actions.length}):*\n\n${list}`,
+        `🤖 *Available Blockchain Operations:*\n\n${formattedActions}`,
         { parse_mode: "Markdown" }
       );
     });
