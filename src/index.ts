@@ -363,7 +363,7 @@ function getCasualResponse(text: string): string | null {
 // NATURAL LANGUAGE PARSER
 // ============================================================
 interface ParsedIntent {
-  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "greet" | "casual" | "research" | "trending" | "lowcap" | "snipe" | "bankr" | "unknown";
+  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "greet" | "casual" | "research" | "trending" | "lowcap" | "snipe" | "bankr" | "bankr-balance" | "unknown";
   amount?: string;
   fromToken?: string;
   toToken?: string;
@@ -417,6 +417,10 @@ function parseNaturalLanguage(text: string): ParsedIntent {
   }
 
   // Balance: "check my usdc balance" or "how much eth do i have" or "balance of usdc"
+  // Also: "bankr balance" or "what's my bankr balance"
+  if (lower.includes("bankr") && (lower.includes("balance") || lower.includes("how much"))) {
+    return { action: "bankr-balance" };
+  }
   const balanceMatch = lower.match(/(?:balance|how much|check)\s+(?:my\s+)?(?:of\s+)?(\w+)?/i);
   if (lower.includes("balance") || lower.includes("how much")) {
     const tokenMatch = lower.match(/(?:balance|how much)\s+(?:my\s+)?(?:of\s+)?(\w+)/i);
@@ -968,6 +972,21 @@ async function main() {
       }
     });
 
+    // /bankr-balance — Check Bankr wallet balance
+    bot.command("bankr-balance", async (ctx) => {
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      await ctx.reply("🏦 Checking Bankr wallet balance...");
+      const result = await bankrPrompt("Show me my account info and wallet balance. Include all tokens and their USD values.");
+      if (result.success) {
+        await ctx.reply(`🏦 *Bankr Wallet*\n\n${result.response}`, { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply(`Couldn't fetch Bankr balance 😅\n\n${result.error}`);
+      }
+    });
+
     // /bankr <prompt> — Raw Bankr prompt for anything
     bot.command("bankr", async (ctx) => {
       const text = ctx.message?.text || "";
@@ -1279,6 +1298,21 @@ async function main() {
             await ctx.reply(`✅ *Snipe Complete!* 🎯\n\n${sResult.response}`, { parse_mode: "Markdown" });
           } else {
             await ctx.reply(`Snipe failed 😬\n\n${sResult.error}\n\nMake sure your Bankr wallet has funds!`);
+          }
+          break;
+        }
+
+        case "bankr-balance": {
+          if (!isBankrConfigured()) {
+            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+            break;
+          }
+          await ctx.reply("🏦 Checking Bankr wallet balance...");
+          const bbResult = await bankrPrompt("Show me my account info and wallet balance. Include all tokens and their USD values.");
+          if (bbResult.success) {
+            await ctx.reply(`🏦 *Bankr Wallet*\n\n${bbResult.response}`, { parse_mode: "Markdown" });
+          } else {
+            await ctx.reply(`Couldn't fetch Bankr balance 😅\n\n${bbResult.error}`);
           }
           break;
         }
