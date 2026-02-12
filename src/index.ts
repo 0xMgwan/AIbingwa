@@ -18,6 +18,9 @@ import { fileURLToPath } from "url";
 import "dotenv/config";
 import { AutonomousTrader } from "./autonomous.js";
 import { loadMemory, getPerformanceSummary, getOpenPositions, getTradeHistory } from "./memory.js";
+import { SkillRegistry } from "./skills.js";
+import { AgentBrain } from "./brain.js";
+import { registerAllSkills } from "./register-skills.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1058,6 +1061,40 @@ async function main() {
       trader.start();
     }
 
+    // ── LLM BRAIN + SKILL SYSTEM ───────────────────────────
+    const skillRegistry = new SkillRegistry();
+    let brain: AgentBrain | null = null;
+
+    registerAllSkills(skillRegistry, {
+      agent,
+      bankrPrompt,
+      executeAction,
+      getWalletAddress,
+      getEthBalance,
+      getTokenBalance,
+      resolveAddress,
+      getPrice: async (symbol: string) => {
+        const token = resolveToken(symbol);
+        if (!token || !token.pythFeedId) return `No price feed for ${symbol}`;
+        const result = await executeAction(agent, "PythActionProvider_fetch_price", { tokenSymbol: token.symbol });
+        return formatPriceResponse(token.symbol, result);
+      },
+      tokenRegistry: TOKEN_REGISTRY,
+      isBankrConfigured,
+      trader,
+    });
+
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        brain = new AgentBrain(skillRegistry);
+        console.log(`🧠 Agent brain online (${skillRegistry.getAll().length} skills loaded)`);
+      } catch (err: any) {
+        console.warn("⚠️ Brain init failed:", err.message, "— falling back to command mode");
+      }
+    } else {
+      console.log("ℹ️ No OPENAI_API_KEY — running in command mode (no LLM reasoning)");
+    }
+
     // /autotrade — Toggle auto-trading
     bot.command("autotrade", async (ctx) => {
       const text = (ctx.message?.text || "").toLowerCase();
@@ -1256,9 +1293,40 @@ async function main() {
     });
 
     // ── NATURAL LANGUAGE HANDLER ────────────────────────────
+    // If brain is available → LLM processes everything (true agent mode)
+    // If no brain → fall back to regex parser (command mode)
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text;
+      const chatId = ctx.chat.id.toString();
+      const userName = ctx.from?.first_name || "fam";
       console.log("📨 Message:", text);
+
+      // ── LLM AGENT MODE ──────────────────────────────────
+      if (brain) {
+        try {
+          await ctx.replyWithChatAction("typing");
+          const response = await brain.processMessage(chatId, userName, text);
+          // Split long responses (Telegram 4096 char limit)
+          if (response.length > 4000) {
+            const chunks = response.match(/[\s\S]{1,4000}/g) || [response];
+            for (const chunk of chunks) {
+              await ctx.reply(chunk, { parse_mode: "Markdown" }).catch(() =>
+                ctx.reply(chunk) // Retry without Markdown if it fails
+              );
+            }
+          } else {
+            await ctx.reply(response, { parse_mode: "Markdown" }).catch(() =>
+              ctx.reply(response) // Retry without Markdown if it fails
+            );
+          }
+        } catch (err: any) {
+          console.error("🧠 Brain error:", err.message);
+          await ctx.reply(`Something went wrong 😅 Try again or use a slash command like /balance, /scan, etc.`);
+        }
+        return;
+      }
+
+      // ── FALLBACK: REGEX PARSER MODE ─────────────────────
       const intent = parseNaturalLanguage(text);
 
       switch (intent.action) {
@@ -1286,7 +1354,6 @@ async function main() {
                 tokenAddress: token.address, destinationAddress: addr, amount: intent.amount,
               });
             }
-            // Extract transaction hash from result
             const txMatch = result.match(/0x[a-fA-F0-9]{64}/);
             const txHash = txMatch ? txMatch[0] : '';
             const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
@@ -1317,11 +1384,7 @@ async function main() {
           }
           const from = resolveToken(intent.fromToken);
           const to = resolveToken(intent.toToken);
-          if (!from) { 
-            await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`);
-            return;
-          }
-          if (!to) { 
+          if (!from || !to) { 
             await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`);
             return;
           }
@@ -1329,44 +1392,11 @@ async function main() {
           await ctx.reply(`🔄 Swapping ${intent.amount} ${from.symbol} → ${to.symbol}...`);
           try {
             const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-              fromToken: from.address,
-              toToken: to.address,
-              fromAmount: intent.amount,
+              fromToken: from.address, toToken: to.address, fromAmount: intent.amount,
             });
-            
-            try {
-              const parsed = JSON.parse(result);
-              if (parsed.success === false) {
-                await ctx.reply(`Swap didn't go through 😅\n\n${parsed.error || 'Unknown error'}\n\nMake sure you have enough ${from.symbol}!`);
-                return;
-              }
-              if (parsed.success === true) {
-                const txHash = parsed.transactionHash || '';
-                const toAmount = parsed.toAmount || 'N/A';
-                const shortHash = txHash ? `${txHash.slice(0, 6)}...${txHash.slice(-4)}` : 'pending';
-                await ctx.reply(
-                  `✅ *Boom! Swap Complete!* 🎉\n\n` +
-                  `📤 Sent: ${intent.amount} ${from.symbol}\n` +
-                  `📥 Received: ${toAmount} ${to.symbol}\n\n` +
-                  `🔗 Tx: \`${shortHash}\`\n\n` +
-                  `You're a legend! 💪`,
-                  { parse_mode: "Markdown" }
-                );
-                return;
-              }
-            } catch {}
             await ctx.reply(`✅ Swap completed!\n\n${result}`);
           } catch (err: any) {
-            const msg = err.message || String(err);
-            if (msg.includes('undefined')) {
-              await ctx.reply(`Swap failed 😬\n\nLooks like there's an issue with that pair. Try a different token combo!`);
-            } else if (msg.includes('insufficient')) {
-              await ctx.reply(`Not enough ${from.symbol} in your wallet 💸\n\nCheck your balance with /balance`);
-            } else if (msg.includes('timeout')) {
-              await ctx.reply(`Swap is taking too long ⏱️\n\nTry again in a moment!`);
-            } else {
-              await ctx.reply(`Swap failed: ${msg}\n\nTry again or check your balance!`);
-            }
+            await ctx.reply(`Swap failed: ${err.message}\n\nTry again or check your balance!`);
           }
           break;
         }
@@ -1375,25 +1405,14 @@ async function main() {
           await ctx.reply("🔍 Checking balances...");
           try {
             const walletAddr = await getWalletAddress(agent);
-            if (intent.token) {
-              const token = resolveToken(intent.token);
-              if (token && token.address && token.symbol !== "ETH") {
-                const bal = await getTokenBalance(token.address, walletAddr, token.decimals);
-                await ctx.reply(`💰 ${token.symbol} Balance: ${parseFloat(bal).toFixed(token.decimals <= 6 ? 2 : 6)}`);
-              } else {
-                const bal = await getEthBalance(walletAddr);
-                await ctx.reply(`💰 ETH Balance: ${parseFloat(bal).toFixed(6)}`);
-              }
-            } else {
-              const ethBal = await getEthBalance(walletAddr);
-              const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, walletAddr, 6);
-              const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, walletAddr, 18);
-              await ctx.reply(formatBalanceResponse([
-                { symbol: "ETH", balance: ethBal },
-                { symbol: "USDC", balance: usdcBal },
-                { symbol: "WETH", balance: wethBal },
-              ]));
-            }
+            const ethBal = await getEthBalance(walletAddr);
+            const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, walletAddr, 6);
+            const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, walletAddr, 18);
+            await ctx.reply(formatBalanceResponse([
+              { symbol: "ETH", balance: ethBal },
+              { symbol: "USDC", balance: usdcBal },
+              { symbol: "WETH", balance: wethBal },
+            ]));
           } catch (err: any) {
             await ctx.reply(`❌ Error: ${err.message}`);
           }
@@ -1402,20 +1421,14 @@ async function main() {
 
         case "price": {
           const token = resolveToken(intent.token || "eth");
-          if (!token || !token.pythFeedId) {
-            await ctx.reply(`❌ Unknown token: ${intent.token}`);
-            return;
-          }
+          if (!token || !token.pythFeedId) { await ctx.reply(`❌ Unknown token: ${intent.token}`); return; }
           await ctx.reply(`📊 Fetching ${token.symbol} price...`);
-          const result = await executeAction(agent, "PythActionProvider_fetch_price", {
-            priceFeedID: token.pythFeedId,
-          });
+          const result = await executeAction(agent, "PythActionProvider_fetch_price", { priceFeedID: token.pythFeedId });
           await ctx.reply(formatPriceResponse(token.symbol, result));
           break;
         }
 
         case "wallet": {
-          await ctx.reply("🔍 Fetching wallet...");
           const addr = await getWalletAddress(agent);
           const ethBal = await getEthBalance(addr);
           await ctx.reply(`💼 Wallet\n\nAddress: ${addr}\nETH: ${parseFloat(ethBal).toFixed(6)}`);
@@ -1436,94 +1449,6 @@ async function main() {
           break;
         }
 
-        case "research": {
-          if (!isBankrConfigured()) {
-            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
-            break;
-          }
-          const rToken = intent.token || "eth";
-          await ctx.reply(`🔍 Researching ${rToken.toUpperCase()}... this may take a moment`);
-          const rResult = await bankrPrompt(`Give me a detailed analysis of ${rToken}: current price, market cap, 24h volume, 24h change, and brief sentiment. Keep it concise.`);
-          if (rResult.success) {
-            await ctx.reply(`📊 *${rToken.toUpperCase()} Research*\n\n${rResult.response}`, { parse_mode: "Markdown" });
-          } else {
-            await ctx.reply(`Couldn't get research data 😅\n\n${rResult.error}`);
-          }
-          break;
-        }
-
-        case "trending": {
-          if (!isBankrConfigured()) {
-            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
-            break;
-          }
-          await ctx.reply("🔥 Finding trending tokens on Base... hang tight");
-          const tResult = await bankrPrompt("What tokens are trending on Base right now? Show me the top 10 with their prices and 24h changes.");
-          if (tResult.success) {
-            await ctx.reply(`🔥 *Trending on Base*\n\n${tResult.response}`, { parse_mode: "Markdown" });
-          } else {
-            await ctx.reply(`Couldn't fetch trending tokens 😅\n\n${tResult.error}`);
-          }
-          break;
-        }
-
-        case "lowcap": {
-          if (!isBankrConfigured()) {
-            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
-            break;
-          }
-          const capStr = (MAX_MARKET_CAP / 1000).toFixed(0);
-          await ctx.reply(`🔎 Hunting for gems under $${capStr}k market cap on Base... 🎯`);
-          const lcResult = await bankrPrompt(
-            `Find me trending or new tokens on Base with a market cap under $${MAX_MARKET_CAP}. ` +
-            `Show token name, symbol, price, market cap, 24h volume, and 24h change. ` +
-            `Focus on tokens with good volume and momentum. List up to 10 tokens.`
-          );
-          if (lcResult.success) {
-            await ctx.reply(
-              `💎 *Low Cap Gems (Under $${capStr}k)*\n\n${lcResult.response}\n\nUse /snipe <amount> <token> to buy!`,
-              { parse_mode: "Markdown" }
-            );
-          } else {
-            await ctx.reply(`Couldn't find low cap tokens 😅\n\n${lcResult.error}`);
-          }
-          break;
-        }
-
-        case "snipe": {
-          if (!isBankrConfigured()) {
-            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
-            break;
-          }
-          if (!intent.amount || !intent.token) {
-            await ctx.reply("🎯 Try: \"snipe $5 PEPE\" or /snipe $5 PEPE");
-            break;
-          }
-          await ctx.reply(`🎯 Sniping ${intent.amount} of ${intent.token.toUpperCase()} on Base... 🔫`);
-          const sResult = await bankrPrompt(`Buy ${intent.amount} of ${intent.token} on Base`);
-          if (sResult.success) {
-            await ctx.reply(`✅ *Snipe Complete!* 🎯\n\n${sResult.response}`, { parse_mode: "Markdown" });
-          } else {
-            await ctx.reply(`Snipe failed 😬\n\n${sResult.error}\n\nMake sure your Bankr wallet has funds!`);
-          }
-          break;
-        }
-
-        case "bankr-balance": {
-          if (!isBankrConfigured()) {
-            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
-            break;
-          }
-          await ctx.reply("🏦 Checking Bankr wallet balance...");
-          const bbResult = await bankrPrompt("Show me my account info and wallet balance. Include all tokens and their USD values.");
-          if (bbResult.success) {
-            await ctx.reply(`🏦 *Bankr Wallet*\n\n${bbResult.response}`, { parse_mode: "Markdown" });
-          } else {
-            await ctx.reply(`Couldn't fetch Bankr balance 😅\n\n${bbResult.error}`);
-          }
-          break;
-        }
-
         case "greet": {
           await ctx.reply(getRandomResponse(GREETINGS));
           break;
@@ -1534,28 +1459,13 @@ async function main() {
           break;
         }
 
-        case "help": {
-          await ctx.reply(
-            "� *I got you! Here's what I can do:*\n\n" +
-            "Just talk to me naturally or use commands:\n\n" +
-            `• _"Send 10 USDC to vitalik.eth"_\n` +
-            `• _"Swap 0.01 ETH for USDC"_\n` +
-            `• _"What's my balance?"_\n` +
-            `• _"Price of BTC"_\n\n` +
-            "Commands: /wallet /balance /price /trade /send /wrap /unwrap /actions",
-            { parse_mode: "Markdown" }
-          );
-          break;
-        }
-
         default: {
           await ctx.reply(
             "Hmm, I didn't quite catch that 🤔\n\n" +
             "Try something like:\n" +
             '• "Check my balance"\n' +
             '• "Price of ETH"\n' +
-            '• "Send 10 USDC to vitalik.eth"\n' +
-            '• "Trade 5 USDC for ETH"\n\n' +
+            '• "Send 10 USDC to vitalik.eth"\n\n' +
             "Or hit /actions to see everything I can do!"
           );
         }
