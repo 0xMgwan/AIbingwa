@@ -19,30 +19,37 @@ interface SessionData {
 type MyContext = Context & SessionFlavor<SessionData>;
 
 let agentKit: AgentKit | null = null;
+let cachedWalletAddress: string | null = null;
 
 async function initializeAgentKit(): Promise<AgentKit> {
   if (agentKit) return agentKit;
 
-  const walletProvider = await CdpSmartWalletProvider.configureWithWallet({
-    apiKeyId: process.env.CDP_API_KEY_ID!,
-    apiKeySecret: process.env.CDP_API_KEY_SECRET!,
-    walletSecret: process.env.CDP_WALLET_SECRET!,
-    networkId: (process.env.NETWORK_ID || "base-mainnet") as any,
-  });
+  try {
+    // Load existing wallet from secret - don't create a new one
+    const walletProvider = await CdpSmartWalletProvider.configureWithWallet({
+      apiKeyId: process.env.CDP_API_KEY_ID!,
+      apiKeySecret: process.env.CDP_API_KEY_SECRET!,
+      walletSecret: process.env.CDP_WALLET_SECRET!,
+      networkId: (process.env.NETWORK_ID || "base-mainnet") as any,
+    });
 
-  agentKit = await AgentKit.from({
-    walletProvider,
-    actionProviders: [
-      walletActionProvider(),
-      erc20ActionProvider(),
-      wethActionProvider(),
-      pythActionProvider(),
-      cdpApiActionProvider(),
-      cdpSmartWalletActionProvider(),
-    ],
-  });
+    agentKit = await AgentKit.from({
+      walletProvider,
+      actionProviders: [
+        walletActionProvider(),
+        erc20ActionProvider(),
+        wethActionProvider(),
+        pythActionProvider(),
+        cdpApiActionProvider(),
+        cdpSmartWalletActionProvider(),
+      ],
+    });
 
-  return agentKit;
+    return agentKit;
+  } catch (error) {
+    console.error("Failed to initialize AgentKit:", error);
+    throw error;
+  }
 }
 
 // Format wallet details nicely
@@ -57,6 +64,11 @@ function formatWalletDetails(result: any): string {
   }
 
   if (result.address) {
+    // Cache the wallet address on first retrieval
+    if (!cachedWalletAddress) {
+      cachedWalletAddress = result.address;
+    }
+
     const lines = [
       `💼 Wallet Details`,
       ``,
