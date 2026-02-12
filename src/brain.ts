@@ -132,7 +132,7 @@ When asked to find opportunities or trade:
   }
 
   // ── PROCESS MESSAGE ──────────────────────────────────────
-  async processMessage(chatId: string, userName: string, message: string): Promise<string> {
+  async processMessage(chatId: string, userName: string, message: string, statusCallback?: (status: string) => Promise<void>): Promise<string> {
     // Get or create user profile
     let user = this.users.get(chatId);
     if (!user) {
@@ -158,16 +158,16 @@ When asked to find opportunities or trade:
       timestamp: Date.now(),
     });
 
-    // Keep conversation history manageable (last 20 messages)
-    if (user.conversationHistory.length > 40) {
-      user.conversationHistory = user.conversationHistory.slice(-40);
+    // Keep conversation history lean for speed
+    if (user.conversationHistory.length > 20) {
+      user.conversationHistory = user.conversationHistory.slice(-20);
     }
 
     try {
-      // Build messages for OpenAI
+      // Build messages for OpenAI — keep history short for speed
       const messages: any[] = [
         { role: "system", content: this.buildSystemPrompt(user) },
-        ...user.conversationHistory.slice(-20).map(m => ({
+        ...user.conversationHistory.slice(-10).map(m => ({
           role: m.role,
           content: m.content,
         })),
@@ -179,8 +179,8 @@ When asked to find opportunities or trade:
         messages,
         tools: this.skills.toOpenAITools(),
         tool_choice: "auto",
-        temperature: 0.7,
-        max_tokens: 1000,
+        temperature: 0.5,
+        max_tokens: 800,
       });
 
       const choice = response.choices[0];
@@ -192,44 +192,36 @@ When asked to find opportunities or trade:
         // Add assistant message with tool calls to conversation
         messages.push(choice.message);
 
-        for (const toolCall of toolCalls) {
+        // Execute all tool calls in parallel for speed
+        const toolPromises = toolCalls.map(async (toolCall) => {
           const tc = toolCall as any;
           const skillName = tc.function?.name;
           const skill = skillName ? this.skills.get(skillName) : undefined;
 
           if (skill) {
             try {
-              const params = JSON.parse(tc.function.arguments || "{}"  );
+              const params = JSON.parse(tc.function.arguments || "{}");
               console.log(`🔧 Executing skill: ${skillName}`, params);
+              if (statusCallback) await statusCallback(`🔧 Running: ${skillName}...`).catch(() => {});
               const result = await skill.execute(params);
-
-              messages.push({
-                role: "tool",
-                tool_call_id: toolCall.id,
-                content: result,
-              });
+              return { role: "tool" as const, tool_call_id: toolCall.id, content: result };
             } catch (err: any) {
-              messages.push({
-                role: "tool",
-                tool_call_id: toolCall.id,
-                content: `Error: ${err.message}`,
-              });
+              return { role: "tool" as const, tool_call_id: toolCall.id, content: `Error: ${err.message}` };
             }
-          } else {
-            messages.push({
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: `Unknown skill: ${skillName}`,
-            });
           }
-        }
+          return { role: "tool" as const, tool_call_id: toolCall.id, content: `Unknown skill: ${skillName}` };
+        });
+
+        const toolResults = await Promise.all(toolPromises);
+        messages.push(...toolResults);
 
         // Get final response after tool execution
+        if (statusCallback) await statusCallback("🧠 Analyzing results...").catch(() => {});
         const finalResponse = await this.openai.chat.completions.create({
           model: this.model,
           messages,
-          temperature: 0.7,
-          max_tokens: 1000,
+          temperature: 0.5,
+          max_tokens: 800,
         });
 
         assistantMessage = finalResponse.choices[0].message.content || "Done!";
@@ -242,8 +234,12 @@ When asked to find opportunities or trade:
         timestamp: Date.now(),
       });
 
-      // Background: reflect and learn (non-blocking)
-      this.reflect(message, assistantMessage).catch(() => {});
+      // Background: reflect only on meaningful trade-related interactions
+      const lower = message.toLowerCase();
+      const isTradingRelated = /trade|buy|sell|swap|snipe|scan|gem|profit|loss|position|portfolio|research|trending/i.test(lower);
+      if (isTradingRelated) {
+        this.reflect(message, assistantMessage).catch(() => {});
+      }
 
       return assistantMessage;
     } catch (err: any) {
@@ -261,7 +257,7 @@ When asked to find opportunities or trade:
   private async reflect(userMessage: string, response: string): Promise<void> {
     try {
       // Only reflect on meaningful interactions (not greetings)
-      if (userMessage.length < 10) return;
+      if (userMessage.length < 15) return;
 
       const reflectionPrompt = `You are an AI trading agent reflecting on an interaction.
 User said: "${userMessage}"

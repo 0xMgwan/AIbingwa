@@ -1305,7 +1305,21 @@ async function main() {
       if (brain) {
         try {
           await ctx.replyWithChatAction("typing");
-          const response = await brain.processMessage(chatId, userName, text);
+          // Keep typing indicator alive during long operations
+          const typingInterval = setInterval(() => {
+            ctx.replyWithChatAction("typing").catch(() => {});
+          }, 4000);
+
+          const statusCallback = async (status: string) => {
+            console.log(`💭 ${status}`);
+          };
+
+          let response: string;
+          try {
+            response = await brain.processMessage(chatId, userName, text, statusCallback);
+          } finally {
+            clearInterval(typingInterval);
+          }
           // Split long responses (Telegram 4096 char limit)
           if (response.length > 4000) {
             const chunks = response.match(/[\s\S]{1,4000}/g) || [response];
