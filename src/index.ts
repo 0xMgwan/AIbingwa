@@ -9,9 +9,85 @@ import {
   walletActionProvider,
   wethActionProvider,
 } from "@coinbase/agentkit";
+import { createPublicClient, http, formatUnits, parseUnits, isAddress, getAddress } from "viem";
+import { base, mainnet } from "viem/chains";
+import { normalize } from "viem/ens";
 import "dotenv/config";
 
-// Session data for tracking user state
+// ============================================================
+// TOKEN REGISTRY — aliases, addresses, decimals, Pyth feed IDs
+// ============================================================
+const TOKEN_REGISTRY: Record<string, {
+  symbol: string;
+  name: string;
+  address: string;
+  decimals: number;
+  pythFeedId?: string;
+}> = {
+  eth: {
+    symbol: "ETH",
+    name: "Ethereum",
+    address: "0x0000000000000000000000000000000000000000",
+    decimals: 18,
+    pythFeedId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+  },
+  weth: {
+    symbol: "WETH",
+    name: "Wrapped Ether",
+    address: "0x4200000000000000000000000000000000000006",
+    decimals: 18,
+    pythFeedId: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+  },
+  usdc: {
+    symbol: "USDC",
+    name: "USD Coin",
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    decimals: 6,
+    pythFeedId: "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
+  },
+  dai: {
+    symbol: "DAI",
+    name: "Dai Stablecoin",
+    address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+    decimals: 18,
+    pythFeedId: "0xb0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e6f20c30bc14",
+  },
+  btc: {
+    symbol: "BTC",
+    name: "Bitcoin",
+    address: "",
+    decimals: 8,
+    pythFeedId: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+  },
+  sol: {
+    symbol: "SOL",
+    name: "Solana",
+    address: "",
+    decimals: 9,
+    pythFeedId: "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+  },
+  cbeth: {
+    symbol: "cbETH",
+    name: "Coinbase Wrapped Staked ETH",
+    address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+    decimals: 18,
+  },
+};
+
+// ERC20 ABI for balanceOf
+const ERC20_ABI = [
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+// ============================================================
+// SESSION & CONTEXT
+// ============================================================
 interface SessionData {
   messageCount: number;
 }
@@ -21,103 +97,103 @@ type MyContext = Context & SessionFlavor<SessionData>;
 let agentKit: AgentKit | null = null;
 let cachedWalletAddress: string | null = null;
 
+// Viem clients for on-chain reads and ENS
+const baseClient = createPublicClient({ chain: base, transport: http() });
+const mainnetClient = createPublicClient({ chain: mainnet, transport: http() });
+
+// ============================================================
+// AGENTKIT INITIALIZATION
+// ============================================================
 async function initializeAgentKit(): Promise<AgentKit> {
   if (agentKit) return agentKit;
 
+  const walletProvider = await CdpSmartWalletProvider.configureWithWallet({
+    apiKeyId: process.env.CDP_API_KEY_ID!,
+    apiKeySecret: process.env.CDP_API_KEY_SECRET!,
+    walletSecret: process.env.CDP_WALLET_SECRET!,
+    networkId: (process.env.NETWORK_ID || "base-mainnet") as any,
+  });
+
+  agentKit = await AgentKit.from({
+    walletProvider,
+    actionProviders: [
+      walletActionProvider(),
+      erc20ActionProvider(),
+      wethActionProvider(),
+      pythActionProvider(),
+      cdpApiActionProvider(),
+      cdpSmartWalletActionProvider(),
+    ],
+  });
+
+  return agentKit;
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+// Resolve token alias to registry entry
+function resolveToken(input: string): typeof TOKEN_REGISTRY[string] | null {
+  const key = input.toLowerCase().trim();
+  if (TOKEN_REGISTRY[key]) return TOKEN_REGISTRY[key];
+  // Try matching by symbol
+  for (const entry of Object.values(TOKEN_REGISTRY)) {
+    if (entry.symbol.toLowerCase() === key) return entry;
+  }
+  // Try matching by address
+  if (isAddress(input)) {
+    for (const entry of Object.values(TOKEN_REGISTRY)) {
+      if (entry.address.toLowerCase() === input.toLowerCase()) return entry;
+    }
+  }
+  return null;
+}
+
+// Resolve ENS name to address
+async function resolveAddress(input: string): Promise<{ address: string; display: string }> {
+  const trimmed = input.trim();
+  if (isAddress(trimmed)) {
+    return { address: getAddress(trimmed), display: trimmed };
+  }
+  if (trimmed.endsWith(".eth")) {
+    try {
+      const resolved = await mainnetClient.getEnsAddress({ name: normalize(trimmed) });
+      if (resolved) {
+        return { address: resolved, display: `${trimmed} (${resolved.slice(0, 6)}...${resolved.slice(-4)})` };
+      }
+    } catch {}
+    return { address: "", display: trimmed };
+  }
+  return { address: trimmed, display: trimmed };
+}
+
+// Get ERC20 token balance
+async function getTokenBalance(tokenAddress: string, walletAddress: string, decimals: number): Promise<string> {
   try {
-    // Load existing wallet from secret - don't create a new one
-    const walletProvider = await CdpSmartWalletProvider.configureWithWallet({
-      apiKeyId: process.env.CDP_API_KEY_ID!,
-      apiKeySecret: process.env.CDP_API_KEY_SECRET!,
-      walletSecret: process.env.CDP_WALLET_SECRET!,
-      networkId: (process.env.NETWORK_ID || "base-mainnet") as any,
+    const balance = await baseClient.readContract({
+      address: tokenAddress as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [walletAddress as `0x${string}`],
     });
-
-    agentKit = await AgentKit.from({
-      walletProvider,
-      actionProviders: [
-        walletActionProvider(),
-        erc20ActionProvider(),
-        wethActionProvider(),
-        pythActionProvider(),
-        cdpApiActionProvider(),
-        cdpSmartWalletActionProvider(),
-      ],
-    });
-
-    return agentKit;
-  } catch (error) {
-    console.error("Failed to initialize AgentKit:", error);
-    throw error;
+    return formatUnits(balance, decimals);
+  } catch {
+    return "0";
   }
 }
 
-// Format wallet details nicely
-function formatWalletDetails(result: any): string {
-  if (typeof result === "string") {
-    // Parse if it's a string
-    try {
-      result = JSON.parse(result);
-    } catch {
-      return result;
-    }
+// Get ETH balance
+async function getEthBalance(walletAddress: string): Promise<string> {
+  try {
+    const balance = await baseClient.getBalance({ address: walletAddress as `0x${string}` });
+    return formatUnits(balance, 18);
+  } catch {
+    return "0";
   }
-
-  if (result.address) {
-    // Cache the wallet address on first retrieval
-    if (!cachedWalletAddress) {
-      cachedWalletAddress = result.address;
-    }
-
-    const lines = [
-      `💼 Wallet Details`,
-      ``,
-      `Address: ${result.address}`,
-    ];
-
-    if (result.owner) {
-      lines.push(`Owner: ${result.owner}`);
-    }
-
-    if (result.network_id) {
-      lines.push(`Network: ${result.network_id}`);
-    }
-
-    if (result.balance !== undefined) {
-      const ethBalance = parseFloat(result.balance) / 1e18;
-      lines.push(`Balance: ${ethBalance.toFixed(6)} ETH`);
-    }
-
-    return lines.join("\n");
-  }
-
-  return JSON.stringify(result, null, 2);
 }
 
-// Format price data nicely
-function formatPrice(result: any): string {
-  if (typeof result === "string") {
-    try {
-      result = JSON.parse(result);
-    } catch {
-      return result;
-    }
-  }
-
-  if (result.price !== undefined) {
-    const price = parseFloat(result.price);
-    return `📊 Price: $${price.toFixed(2)}`;
-  }
-
-  if (result.success && result.price) {
-    const price = parseFloat(result.price);
-    return `📊 Price: $${price.toFixed(2)}`;
-  }
-
-  return JSON.stringify(result, null, 2);
-}
-
-// Find and execute an AgentKit action by name
+// Execute AgentKit action with timeout
 async function executeAction(
   agent: AgentKit,
   actionName: string,
@@ -125,119 +201,162 @@ async function executeAction(
 ): Promise<string> {
   const actions = agent.getActions();
   const action = actions.find((a) => a.name === actionName);
-  if (!action) {
-    return `Action "${actionName}" not found.`;
-  }
+  if (!action) return `Action "${actionName}" not found.`;
+
   try {
-    // Add timeout to prevent hanging
-    const timeoutPromise = new Promise<string>((_, reject) =>
+    const timeout = new Promise<string>((_, reject) =>
       setTimeout(() => reject(new Error("Action timeout (30s)")), 30000)
     );
-
     const result = await Promise.race([
       Promise.resolve(action.invoke(args)),
-      timeoutPromise,
+      timeout,
     ]);
-
-    // Format based on action type
-    if (actionName.includes("wallet_details")) {
-      return formatWalletDetails(result);
-    } else if (actionName.includes("price")) {
-      return formatPrice(result);
-    }
-
-    let text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-    return text;
+    return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (error: any) {
-    return `Error executing ${actionName}: ${error.message}`;
+    return `Error: ${error.message}`;
   }
 }
 
-// Process user message and route to the right action
-async function processMessage(
-  agent: AgentKit,
-  text: string
-): Promise<string> {
+// Get wallet address (cached)
+async function getWalletAddress(agent: AgentKit): Promise<string> {
+  if (cachedWalletAddress) return cachedWalletAddress;
+  const result = await executeAction(agent, "WalletActionProvider_get_wallet_details");
+  // Try to extract address from result
+  const match = result.match(/0x[a-fA-F0-9]{40}/);
+  if (match) {
+    cachedWalletAddress = match[0];
+    return cachedWalletAddress;
+  }
+  return "";
+}
+
+// ============================================================
+// NATURAL LANGUAGE PARSER
+// ============================================================
+interface ParsedIntent {
+  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "unknown";
+  amount?: string;
+  fromToken?: string;
+  toToken?: string;
+  recipient?: string;
+  token?: string;
+}
+
+function parseNaturalLanguage(text: string): ParsedIntent {
   const lower = text.toLowerCase().trim();
 
-  // Wallet details
-  if (
-    lower.includes("wallet") ||
-    lower.includes("address") ||
-    lower.includes("balance")
-  ) {
-    return executeAction(agent, "WalletActionProvider_get_wallet_details");
-  }
-
-  // ETH balance
-  if (lower.includes("eth balance") || lower === "balance") {
-    return executeAction(agent, "WalletActionProvider_get_balance");
-  }
-
-  // Token price
-  if (lower.includes("price")) {
-    // Extract token symbol
-    const tokens: Record<string, string> = {
-      eth: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
-      btc: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
-      usdc: "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
-      sol: "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+  // Send / Transfer: "send 10 usdc to vitalik.eth" or "transfer 0.1 eth to 0x123..."
+  const sendMatch = lower.match(/(?:send|transfer)\s+(\$?[\d.]+)\s+(\w+)\s+(?:to\s+)(.+)/i);
+  if (sendMatch) {
+    return {
+      action: "send",
+      amount: sendMatch[1].replace("$", ""),
+      token: sendMatch[2],
+      recipient: sendMatch[3].trim(),
     };
-
-    let tokenId = tokens["eth"]; // default
-    let tokenName = "ETH";
-    for (const [name, id] of Object.entries(tokens)) {
-      if (lower.includes(name)) {
-        tokenId = id;
-        tokenName = name.toUpperCase();
-        break;
-      }
-    }
-
-    return executeAction(agent, "PythActionProvider_fetch_price", {
-      priceFeedID: tokenId,
-    });
   }
 
-  // Wrap ETH
-  if (lower.includes("wrap")) {
-    const amountMatch = lower.match(/(\d+\.?\d*)/);
-    const amount = amountMatch ? amountMatch[1] : "0.001";
-    return executeAction(agent, "WethActionProvider_wrap_eth", {
-      amountToWrap: amount,
-    });
+  // Trade / Swap: "trade 5 usdc for eth" or "swap 0.1 eth to usdc" or "buy $5 of eth"
+  const tradeMatch = lower.match(/(?:trade|swap|exchange)\s+(\$?[\d.]+)\s+(\w+)\s+(?:for|to|into)\s+(\w+)/i);
+  if (tradeMatch) {
+    return {
+      action: "trade",
+      amount: tradeMatch[1].replace("$", ""),
+      fromToken: tradeMatch[2],
+      toToken: tradeMatch[3],
+    };
   }
 
-  // Transfer
-  if (lower.includes("transfer") || lower.includes("send")) {
-    return "⚠️ To transfer tokens, use this format:\n\n`/transfer <amount> <token> to <address>`\n\nExample: `/transfer 0.01 ETH to 0x1234...`";
+  // Buy: "buy 5 usdc worth of eth" or "buy $5 of eth"
+  const buyMatch = lower.match(/buy\s+(\$?[\d.]+)\s+(?:of\s+)?(\w+)(?:\s+with\s+(\w+))?/i);
+  if (buyMatch) {
+    return {
+      action: "trade",
+      amount: buyMatch[1].replace("$", ""),
+      fromToken: buyMatch[3] || "usdc",
+      toToken: buyMatch[2],
+    };
   }
 
-  // List actions
-  if (
-    lower.includes("help") ||
-    lower.includes("command") ||
-    lower.includes("action") ||
-    lower.includes("what can")
-  ) {
-    const actions = agent.getActions();
-    const list = actions.map((a) => `• \`${a.name}\``).join("\n");
-    return `🤖 *Available Blockchain Operations:*\n\n${list}\n\n*Quick Commands:*\n/wallet — Wallet details\n/balance — ETH balance\n/price — ETH price\n/price btc — BTC price\n/actions — List all actions`;
+  // Balance: "check my usdc balance" or "how much eth do i have" or "balance of usdc"
+  const balanceMatch = lower.match(/(?:balance|how much|check)\s+(?:my\s+)?(?:of\s+)?(\w+)?/i);
+  if (lower.includes("balance") || lower.includes("how much")) {
+    const tokenMatch = lower.match(/(?:balance|how much)\s+(?:my\s+)?(?:of\s+)?(\w+)/i);
+    return {
+      action: "balance",
+      token: tokenMatch ? tokenMatch[1] : undefined,
+    };
   }
 
-  // Default
-  return `🤖 *Blockchain Agent*\n\nI can help you with:\n\n• /wallet — View wallet details\n• /balance — Check ETH balance\n• /price — Get token prices\n• /price btc — BTC price\n• /price sol — SOL price\n• /wrap <amount> — Wrap ETH to WETH\n• /actions — List all available actions\n\nJust type a command or ask me anything!`;
+  // Price: "price of eth" or "what's the eth price" or "how much is btc"
+  if (lower.includes("price") || lower.match(/how much is (\w+)/)) {
+    const priceMatch = lower.match(/(?:price|how much is)\s+(?:of\s+)?(\w+)/i);
+    return {
+      action: "price",
+      token: priceMatch ? priceMatch[1] : "eth",
+    };
+  }
+
+  // Wrap: "wrap 0.1 eth"
+  if (lower.includes("wrap") && !lower.includes("unwrap")) {
+    const wrapMatch = lower.match(/wrap\s+([\d.]+)/);
+    return { action: "wrap", amount: wrapMatch ? wrapMatch[1] : "0.001" };
+  }
+
+  // Unwrap: "unwrap 0.1 weth"
+  if (lower.includes("unwrap")) {
+    const unwrapMatch = lower.match(/unwrap\s+([\d.]+)/);
+    return { action: "unwrap", amount: unwrapMatch ? unwrapMatch[1] : "0.001" };
+  }
+
+  // Wallet
+  if (lower.includes("wallet") || lower.includes("address")) {
+    return { action: "wallet" };
+  }
+
+  // Help
+  if (lower.includes("help") || lower.includes("command") || lower.includes("what can") || lower.includes("menu")) {
+    return { action: "help" };
+  }
+
+  return { action: "unknown" };
 }
 
+// ============================================================
+// RESPONSE FORMATTERS
+// ============================================================
+
+function formatBalanceResponse(balances: { symbol: string; balance: string; usdValue?: string }[]): string {
+  const lines = ["💰 Wallet Balances\n"];
+  for (const b of balances) {
+    const bal = parseFloat(b.balance);
+    if (bal > 0) {
+      lines.push(`  ${b.symbol}: ${bal.toFixed(bal < 0.001 ? 8 : 4)}${b.usdValue ? ` (~$${b.usdValue})` : ""}`);
+    } else {
+      lines.push(`  ${b.symbol}: 0`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatPriceResponse(symbol: string, result: any): string {
+  if (typeof result === "string") {
+    try { result = JSON.parse(result); } catch { return result; }
+  }
+  if (result.price !== undefined) {
+    const price = parseFloat(result.price);
+    return `📊 ${symbol.toUpperCase()} Price: $${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return `📊 Could not fetch ${symbol} price`;
+}
+
+// ============================================================
+// MAIN BOT
+// ============================================================
 async function main() {
   try {
     if (!process.env.TELEGRAM_BOT_TOKEN) {
       console.error("❌ TELEGRAM_BOT_TOKEN is required in .env");
-      console.log("\nTo get a bot token:");
-      console.log("1. Open Telegram and search for @BotFather");
-      console.log("2. Send /newbot");
-      console.log("3. Follow the prompts to name your bot");
-      console.log("4. Copy the token and paste it in .env");
       process.exit(1);
     }
 
@@ -245,156 +364,400 @@ async function main() {
     const agent = await initializeAgentKit();
     console.log("✅ AgentKit initialized on Base Mainnet");
 
-    console.log("🤖 Creating Telegram bot...");
     const bot = new Bot<MyContext>(process.env.TELEGRAM_BOT_TOKEN);
 
-    // Session middleware
-    bot.use(
-      session({
-        initial: (): SessionData => ({ messageCount: 0 }),
-      })
-    );
+    bot.use(session({ initial: (): SessionData => ({ messageCount: 0 }) }));
 
-    // /start command
+    // ── /start ──────────────────────────────────────────────
     bot.command("start", async (ctx) => {
-      console.log("📨 Received /start command from", ctx.from?.username);
-      try {
-        await ctx.reply(
-          "🚀 *Welcome to the Blockchain Agent!*\n\n" +
-            "I'm your AI-powered blockchain assistant on *Base Mainnet*.\n\n" +
-            "Here's what I can do:\n" +
-            "• /wallet — View wallet address & details\n" +
-            "• /balance — Check ETH balance\n" +
-            "• /price — Get ETH price\n" +
-            "• /price btc — Get BTC price\n" +
-            "• /wrap <amount> — Wrap ETH to WETH\n" +
-            "• /actions — List all blockchain operations\n\n" +
-            "Just type a command or ask me anything!",
-          { parse_mode: "Markdown" }
-        );
-        console.log("✅ Sent /start response");
-      } catch (err) {
-        console.error("❌ Error sending /start response:", err);
-      }
-    });
-
-    // /wallet command
-    bot.command("wallet", async (ctx) => {
-      console.log("📨 Received /wallet command");
-      await ctx.reply("🔍 Fetching wallet details...");
-      try {
-        const result = await executeAction(
-          agent,
-          "WalletActionProvider_get_wallet_details"
-        );
-        await ctx.reply(`💼 Wallet Details:\n\n${result}`);
-        console.log("✅ Sent wallet details");
-      } catch (err) {
-        console.error("❌ Error fetching wallet:", err);
-        await ctx.reply("❌ Error fetching wallet details");
-      }
-    });
-
-    // /balance command
-    bot.command("balance", async (ctx) => {
-      console.log("📨 Received /balance command");
-      await ctx.reply("🔍 Checking balance...");
-      try {
-        const result = await executeAction(
-          agent,
-          "WalletActionProvider_get_wallet_details"
-        );
-        await ctx.reply(`💰 Balance:\n\n${result}`);
-        console.log("✅ Sent balance");
-      } catch (err) {
-        console.error("❌ Error checking balance:", err);
-        await ctx.reply("❌ Error checking balance");
-      }
-    });
-
-    // /price command
-    bot.command("price", async (ctx) => {
-      const text = ctx.message?.text || "";
-      await ctx.reply("📊 Fetching price...");
-      const result = await processMessage(agent, text);
-      await ctx.reply(result, { parse_mode: "Markdown" });
-    });
-
-    // /actions command
-    bot.command("actions", async (ctx) => {
-      const actions = agent.getActions();
-      
-      // Group and format actions with descriptions
-      const actionDescriptions: Record<string, string> = {
-        "get_wallet_details": "💼 View wallet address and details",
-        "get_balance": "💰 Check token balance",
-        "transfer": "📤 Transfer tokens to another address",
-        "approve": "✅ Approve token spending",
-        "get_allowance": "🔍 Check token allowance",
-        "wrap_eth": "🔄 Wrap ETH to WETH",
-        "unwrap_eth": "🔄 Unwrap WETH to ETH",
-        "fetch_price": "📊 Get token price from Pyth oracle",
-        "swap": "🔀 Swap tokens on DEX",
-        "request_faucet": "💧 Request testnet funds",
-        "list_spend_permissions": "📋 List spend permissions",
-        "use_spend_permission": "💳 Use spend permission",
-      };
-
-      const formattedActions = actions
-        .map((a) => {
-          const actionKey = a.name.toLowerCase();
-          let description = a.description || "Unknown action";
-          
-          // Try to match with our descriptions
-          for (const [key, desc] of Object.entries(actionDescriptions)) {
-            if (actionKey.includes(key)) {
-              description = desc;
-              break;
-            }
-          }
-          
-          return description;
-        })
-        .filter((desc, index, self) => self.indexOf(desc) === index) // Remove duplicates
-        .join("\n");
-
+      console.log("📨 /start from", ctx.from?.username);
       await ctx.reply(
-        `🤖 *Available Blockchain Operations:*\n\n${formattedActions}`,
+        "🚀 *Welcome to AIBINGWA!*\n\n" +
+        "I'm your AI blockchain agent on *Base Mainnet*.\n\n" +
+        "*Commands:*\n" +
+        "💼 /wallet — View wallet address\n" +
+        "💰 /balance — All token balances\n" +
+        "📊 /price eth — Token prices\n" +
+        "🔄 /trade 5 usdc eth — Swap tokens\n" +
+        "📤 /send 10 usdc to vitalik.eth — Send tokens\n" +
+        "🔄 /wrap 0.01 — Wrap ETH to WETH\n" +
+        "📋 /actions — All operations\n\n" +
+        "*Or just type naturally:*\n" +
+        '• "Send 10 USDC to vitalik.eth"\n' +
+        '• "Swap 0.01 ETH for USDC"\n' +
+        '• "What\'s the price of ETH?"\n' +
+        '• "Check my USDC balance"',
         { parse_mode: "Markdown" }
       );
     });
 
-    // /wrap command
-    bot.command("wrap", async (ctx) => {
-      const text = ctx.message?.text || "";
-      const amountMatch = text.match(/(\d+\.?\d*)/);
-      const amount = amountMatch ? amountMatch[1] : "0.001";
-      await ctx.reply(`🔄 Wrapping ${amount} ETH to WETH...`);
-      const result = await executeAction(agent, "WethActionProvider_wrap_eth", {
-        amountToWrap: amount,
-      });
-      await ctx.reply(`✅ *Wrap Result:*\n\n${result}`, {
-        parse_mode: "Markdown",
-      });
+    // ── /wallet ─────────────────────────────────────────────
+    bot.command("wallet", async (ctx) => {
+      console.log("📨 /wallet");
+      await ctx.reply("🔍 Fetching wallet...");
+      try {
+        const addr = await getWalletAddress(agent);
+        const ethBal = await getEthBalance(addr);
+        const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, addr, 6);
+        const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, addr, 18);
+
+        await ctx.reply(
+          `💼 Wallet\n\n` +
+          `Address: ${addr}\n` +
+          `Network: Base Mainnet\n\n` +
+          `💰 Balances:\n` +
+          `  ETH: ${parseFloat(ethBal).toFixed(6)}\n` +
+          `  USDC: ${parseFloat(usdcBal).toFixed(2)}\n` +
+          `  WETH: ${parseFloat(wethBal).toFixed(6)}`
+        );
+      } catch (err) {
+        console.error("❌ /wallet error:", err);
+        await ctx.reply("❌ Error fetching wallet details");
+      }
     });
 
-    // Handle all other text messages
+    // ── /balance ────────────────────────────────────────────
+    bot.command("balance", async (ctx) => {
+      console.log("📨 /balance");
+      await ctx.reply("🔍 Checking balances...");
+      try {
+        const addr = await getWalletAddress(agent);
+        const ethBal = await getEthBalance(addr);
+        const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, addr, 6);
+        const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, addr, 18);
+        const daiBal = await getTokenBalance(TOKEN_REGISTRY.dai.address, addr, 18);
+        const cbethBal = await getTokenBalance(TOKEN_REGISTRY.cbeth.address, addr, 18);
+
+        const response = formatBalanceResponse([
+          { symbol: "ETH", balance: ethBal },
+          { symbol: "USDC", balance: usdcBal },
+          { symbol: "WETH", balance: wethBal },
+          { symbol: "DAI", balance: daiBal },
+          { symbol: "cbETH", balance: cbethBal },
+        ]);
+        await ctx.reply(response);
+      } catch (err) {
+        console.error("❌ /balance error:", err);
+        await ctx.reply("❌ Error checking balances");
+      }
+    });
+
+    // ── /price ──────────────────────────────────────────────
+    bot.command("price", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const parts = text.split(/\s+/);
+      const tokenInput = parts[1] || "eth";
+      const token = resolveToken(tokenInput);
+
+      if (!token || !token.pythFeedId) {
+        await ctx.reply(`❌ Unknown token: ${tokenInput}\n\nSupported: eth, btc, usdc, sol, dai, weth`);
+        return;
+      }
+
+      await ctx.reply(`📊 Fetching ${token.symbol} price...`);
+      const result = await executeAction(agent, "PythActionProvider_fetch_price", {
+        priceFeedID: token.pythFeedId,
+      });
+      await ctx.reply(formatPriceResponse(token.symbol, result));
+    });
+
+    // ── /trade ──────────────────────────────────────────────
+    bot.command("trade", async (ctx) => {
+      const text = ctx.message?.text || "";
+      // /trade 5 usdc eth  OR  /trade 5 usdc for eth
+      const parts = text.split(/\s+/).filter(p => p.toLowerCase() !== "for" && p.toLowerCase() !== "to");
+      if (parts.length < 4) {
+        await ctx.reply(
+          "📝 Trade format:\n\n" +
+          "/trade <amount> <from> <to>\n\n" +
+          "Examples:\n" +
+          "  /trade 5 usdc eth\n" +
+          "  /trade 0.01 eth usdc\n" +
+          "  /trade 100 dai usdc"
+        );
+        return;
+      }
+
+      const amount = parts[1];
+      const fromToken = resolveToken(parts[2]);
+      const toToken = resolveToken(parts[3]);
+
+      if (!fromToken) { await ctx.reply(`❌ Unknown token: ${parts[2]}`); return; }
+      if (!toToken) { await ctx.reply(`❌ Unknown token: ${parts[3]}`); return; }
+
+      await ctx.reply(`🔄 Trading ${amount} ${fromToken.symbol} for ${toToken.symbol}...`);
+      try {
+        const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
+          fromAssetId: fromToken.address || fromToken.symbol.toLowerCase(),
+          toAssetId: toToken.address || toToken.symbol.toLowerCase(),
+          amount: amount,
+        });
+        await ctx.reply(`✅ Trade Result:\n\n${result}`);
+      } catch (err: any) {
+        await ctx.reply(`❌ Trade failed: ${err.message}`);
+      }
+    });
+
+    // ── /send ───────────────────────────────────────────────
+    bot.command("send", async (ctx) => {
+      const text = ctx.message?.text || "";
+      // /send 10 usdc to vitalik.eth
+      const sendMatch = text.match(/\/send\s+(\$?[\d.]+)\s+(\w+)\s+(?:to\s+)?(.+)/i);
+      if (!sendMatch) {
+        await ctx.reply(
+          "📝 Send format:\n\n" +
+          "/send <amount> <token> to <address>\n\n" +
+          "Examples:\n" +
+          "  /send 10 usdc to vitalik.eth\n" +
+          "  /send 0.01 eth to 0x1234...abcd\n" +
+          "  /send 50 dai to friend.eth"
+        );
+        return;
+      }
+
+      const amount = sendMatch[1].replace("$", "");
+      const token = resolveToken(sendMatch[2]);
+      const recipientInput = sendMatch[3].trim();
+
+      if (!token) { await ctx.reply(`❌ Unknown token: ${sendMatch[2]}`); return; }
+
+      await ctx.reply(`🔍 Resolving recipient...`);
+      const { address: recipientAddr, display } = await resolveAddress(recipientInput);
+      if (!recipientAddr) {
+        await ctx.reply(`❌ Could not resolve address: ${recipientInput}`);
+        return;
+      }
+
+      await ctx.reply(`📤 Sending ${amount} ${token.symbol} to ${display}...`);
+      try {
+        let result: string;
+        if (token.symbol === "ETH") {
+          result = await executeAction(agent, "WalletActionProvider_native_transfer", {
+            to: recipientAddr,
+            value: parseUnits(amount, 18).toString(),
+          });
+        } else {
+          result = await executeAction(agent, "ERC20ActionProvider_transfer", {
+            contractAddress: token.address,
+            to: recipientAddr,
+            amount: amount,
+          });
+        }
+        await ctx.reply(`✅ Send Result:\n\n${result}`);
+      } catch (err: any) {
+        await ctx.reply(`❌ Send failed: ${err.message}`);
+      }
+    });
+
+    // ── /wrap ───────────────────────────────────────────────
+    bot.command("wrap", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const match = text.match(/([\d.]+)/);
+      const amount = match ? match[1] : "0.001";
+      await ctx.reply(`🔄 Wrapping ${amount} ETH to WETH...`);
+      const result = await executeAction(agent, "WethActionProvider_wrap_eth", { amountToWrap: amount });
+      await ctx.reply(`✅ Wrap Result:\n\n${result}`);
+    });
+
+    // ── /unwrap ─────────────────────────────────────────────
+    bot.command("unwrap", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const match = text.match(/([\d.]+)/);
+      const amount = match ? match[1] : "0.001";
+      await ctx.reply(`🔄 Unwrapping ${amount} WETH to ETH...`);
+      const result = await executeAction(agent, "WethActionProvider_unwrap_eth", { amountToUnwrap: amount });
+      await ctx.reply(`✅ Unwrap Result:\n\n${result}`);
+    });
+
+    // ── /actions ────────────────────────────────────────────
+    bot.command("actions", async (ctx) => {
+      await ctx.reply(
+        "🤖 *AIBINGWA Capabilities:*\n\n" +
+        "*Wallet*\n" +
+        "💼 /wallet — View address & balances\n" +
+        "💰 /balance — All token balances (ETH, USDC, WETH, DAI)\n\n" +
+        "*Trading*\n" +
+        "🔄 /trade 5 usdc eth — Swap tokens\n" +
+        "🔄 /wrap 0.01 — Wrap ETH to WETH\n" +
+        "🔄 /unwrap 0.01 — Unwrap WETH to ETH\n\n" +
+        "*Transfers*\n" +
+        "📤 /send 10 usdc to vitalik.eth\n" +
+        "📤 /send 0.01 eth to 0x1234...\n\n" +
+        "*Prices*\n" +
+        "📊 /price eth — ETH price\n" +
+        "📊 /price btc — BTC price\n" +
+        "📊 /price sol — SOL price\n\n" +
+        "*Natural Language*\n" +
+        'Just type naturally like:\n' +
+        '• "Send 10 USDC to vitalik.eth"\n' +
+        '• "Swap 0.01 ETH for USDC"\n' +
+        '• "What\'s my USDC balance?"\n' +
+        '• "Price of BTC"',
+        { parse_mode: "Markdown" }
+      );
+    });
+
+    // ── NATURAL LANGUAGE HANDLER ────────────────────────────
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text;
-      await ctx.reply("⏳ Processing...");
-      const result = await processMessage(agent, text);
-      await ctx.reply(result, { parse_mode: "Markdown" });
+      console.log("📨 Message:", text);
+      const intent = parseNaturalLanguage(text);
+
+      switch (intent.action) {
+        case "send": {
+          if (!intent.amount || !intent.token || !intent.recipient) {
+            await ctx.reply("📝 Try: \"Send 10 USDC to vitalik.eth\"");
+            return;
+          }
+          const token = resolveToken(intent.token);
+          if (!token) { await ctx.reply(`❌ Unknown token: ${intent.token}`); return; }
+
+          await ctx.reply(`🔍 Resolving recipient...`);
+          const { address: addr, display } = await resolveAddress(intent.recipient);
+          if (!addr) { await ctx.reply(`❌ Could not resolve: ${intent.recipient}`); return; }
+
+          await ctx.reply(`📤 Sending ${intent.amount} ${token.symbol} to ${display}...`);
+          try {
+            let result: string;
+            if (token.symbol === "ETH") {
+              result = await executeAction(agent, "WalletActionProvider_native_transfer", {
+                to: addr, value: parseUnits(intent.amount, 18).toString(),
+              });
+            } else {
+              result = await executeAction(agent, "ERC20ActionProvider_transfer", {
+                contractAddress: token.address, to: addr, amount: intent.amount,
+              });
+            }
+            await ctx.reply(`✅ Sent!\n\n${result}`);
+          } catch (err: any) {
+            await ctx.reply(`❌ Send failed: ${err.message}`);
+          }
+          break;
+        }
+
+        case "trade": {
+          if (!intent.amount || !intent.fromToken || !intent.toToken) {
+            await ctx.reply("📝 Try: \"Trade 5 USDC for ETH\"");
+            return;
+          }
+          const from = resolveToken(intent.fromToken);
+          const to = resolveToken(intent.toToken);
+          if (!from) { await ctx.reply(`❌ Unknown token: ${intent.fromToken}`); return; }
+          if (!to) { await ctx.reply(`❌ Unknown token: ${intent.toToken}`); return; }
+
+          await ctx.reply(`🔄 Trading ${intent.amount} ${from.symbol} for ${to.symbol}...`);
+          try {
+            const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
+              fromAssetId: from.address || from.symbol.toLowerCase(),
+              toAssetId: to.address || to.symbol.toLowerCase(),
+              amount: intent.amount,
+            });
+            await ctx.reply(`✅ Trade Result:\n\n${result}`);
+          } catch (err: any) {
+            await ctx.reply(`❌ Trade failed: ${err.message}`);
+          }
+          break;
+        }
+
+        case "balance": {
+          await ctx.reply("🔍 Checking balances...");
+          try {
+            const walletAddr = await getWalletAddress(agent);
+            if (intent.token) {
+              const token = resolveToken(intent.token);
+              if (token && token.address && token.symbol !== "ETH") {
+                const bal = await getTokenBalance(token.address, walletAddr, token.decimals);
+                await ctx.reply(`💰 ${token.symbol} Balance: ${parseFloat(bal).toFixed(token.decimals <= 6 ? 2 : 6)}`);
+              } else {
+                const bal = await getEthBalance(walletAddr);
+                await ctx.reply(`💰 ETH Balance: ${parseFloat(bal).toFixed(6)}`);
+              }
+            } else {
+              const ethBal = await getEthBalance(walletAddr);
+              const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, walletAddr, 6);
+              const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, walletAddr, 18);
+              await ctx.reply(formatBalanceResponse([
+                { symbol: "ETH", balance: ethBal },
+                { symbol: "USDC", balance: usdcBal },
+                { symbol: "WETH", balance: wethBal },
+              ]));
+            }
+          } catch (err: any) {
+            await ctx.reply(`❌ Error: ${err.message}`);
+          }
+          break;
+        }
+
+        case "price": {
+          const token = resolveToken(intent.token || "eth");
+          if (!token || !token.pythFeedId) {
+            await ctx.reply(`❌ Unknown token: ${intent.token}`);
+            return;
+          }
+          await ctx.reply(`📊 Fetching ${token.symbol} price...`);
+          const result = await executeAction(agent, "PythActionProvider_fetch_price", {
+            priceFeedID: token.pythFeedId,
+          });
+          await ctx.reply(formatPriceResponse(token.symbol, result));
+          break;
+        }
+
+        case "wallet": {
+          await ctx.reply("🔍 Fetching wallet...");
+          const addr = await getWalletAddress(agent);
+          const ethBal = await getEthBalance(addr);
+          await ctx.reply(`💼 Wallet\n\nAddress: ${addr}\nETH: ${parseFloat(ethBal).toFixed(6)}`);
+          break;
+        }
+
+        case "wrap": {
+          await ctx.reply(`🔄 Wrapping ${intent.amount} ETH...`);
+          const result = await executeAction(agent, "WethActionProvider_wrap_eth", { amountToWrap: intent.amount });
+          await ctx.reply(`✅ ${result}`);
+          break;
+        }
+
+        case "unwrap": {
+          await ctx.reply(`🔄 Unwrapping ${intent.amount} WETH...`);
+          const result = await executeAction(agent, "WethActionProvider_unwrap_eth", { amountToUnwrap: intent.amount });
+          await ctx.reply(`✅ ${result}`);
+          break;
+        }
+
+        case "help": {
+          await ctx.reply(
+            "🤖 *AIBINGWA — AI Blockchain Agent*\n\n" +
+            "Just type naturally or use commands:\n\n" +
+            '• "Send 10 USDC to vitalik.eth"\n' +
+            '• "Swap 0.01 ETH for USDC"\n' +
+            '• "What\'s my balance?"\n' +
+            '• "Price of BTC"\n\n' +
+            "Commands: /wallet /balance /price /trade /send /wrap /unwrap /actions",
+            { parse_mode: "Markdown" }
+          );
+          break;
+        }
+
+        default: {
+          await ctx.reply(
+            "🤖 I didn't understand that. Try:\n\n" +
+            '• "Send 10 USDC to vitalik.eth"\n' +
+            '• "Trade 5 USDC for ETH"\n' +
+            '• "Check my balance"\n' +
+            '• "Price of ETH"\n\n' +
+            "Or type /actions to see all commands."
+          );
+        }
+      }
     });
 
     // Error handler
-    bot.catch((err) => {
-      console.error("Bot error:", err);
-    });
+    bot.catch((err) => console.error("Bot error:", err));
 
-    // Start the bot with polling
-    console.log("🤖 Telegram bot starting with polling...");
+    // Start
+    console.log("🤖 Starting bot...");
     bot.start();
-    console.log("✅ Bot is running! Send /start in Telegram to begin.");
+    console.log("✅ AIBINGWA bot is running! Send /start in Telegram.");
   } catch (error) {
     console.error("❌ Fatal error:", error);
     process.exit(1);

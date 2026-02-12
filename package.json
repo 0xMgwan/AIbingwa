@@ -13,8 +13,9 @@
   },
   "dependencies": {
     "@coinbase/agentkit": "latest",
+    "dotenv": "^16.4.5",
     "grammy": "^1.30.0",
-    "dotenv": "^16.4.5"
+    "viem": "^2.45.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.9",
