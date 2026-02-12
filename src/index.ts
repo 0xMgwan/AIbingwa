@@ -363,13 +363,14 @@ function getCasualResponse(text: string): string | null {
 // NATURAL LANGUAGE PARSER
 // ============================================================
 interface ParsedIntent {
-  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "greet" | "casual" | "unknown";
+  action: "send" | "trade" | "swap" | "balance" | "price" | "wallet" | "wrap" | "unwrap" | "help" | "greet" | "casual" | "research" | "trending" | "lowcap" | "snipe" | "bankr" | "unknown";
   amount?: string;
   fromToken?: string;
   toToken?: string;
   recipient?: string;
   token?: string;
   casualResponse?: string;
+  bankrPrompt?: string;
 }
 
 function parseNaturalLanguage(text: string): ParsedIntent {
@@ -451,6 +452,34 @@ function parseNaturalLanguage(text: string): ParsedIntent {
     return { action: "wallet" };
   }
 
+  // Bankr: research
+  const researchMatch = lower.match(/(?:research|analyze|analysis|analyse)\s+(.+)/i);
+  if (researchMatch) {
+    return { action: "research", token: researchMatch[1].trim() };
+  }
+
+  // Bankr: trending
+  if (lower.includes("trending") || lower.includes("what's hot") || lower.includes("whats hot") || lower.match(/top.*tokens/)) {
+    return { action: "trending" };
+  }
+
+  // Bankr: low cap / gems
+  if (lower.includes("low cap") || lower.includes("lowcap") || lower.includes("gem") || lower.includes("under 40k") || lower.match(/small.*cap/) || lower.match(/micro.*cap/)) {
+    return { action: "lowcap" };
+  }
+
+  // Bankr: snipe / buy via Bankr
+  const snipeMatch = lower.match(/(?:snipe|ape|ape into)\s+(\$?[\d.]+)\s+(?:of\s+)?(.+)/i);
+  if (snipeMatch) {
+    return { action: "snipe", amount: snipeMatch[1], token: snipeMatch[2].trim() };
+  }
+
+  // Bankr: sentiment
+  if (lower.includes("sentiment") || lower.includes("bullish") || lower.includes("bearish")) {
+    const sentToken = lower.match(/(?:sentiment|bullish|bearish)\s+(?:on\s+)?(?:for\s+)?(\w+)/i);
+    return { action: "research", token: sentToken ? sentToken[1] : "eth" };
+  }
+
   // Help
   if (lower.includes("help") || lower.includes("command") || lower.includes("what can") || lower.includes("menu")) {
     return { action: "help" };
@@ -488,6 +517,97 @@ function formatPriceResponse(symbol: string, result: any): string {
 }
 
 // ============================================================
+// BANKR AGENT API CLIENT
+// ============================================================
+const BANKR_API_URL = "https://api.bankr.bot";
+const BANKR_API_KEY = process.env.BANKR_API_KEY || "";
+const MAX_MARKET_CAP = parseInt(process.env.MAX_MARKET_CAP || "40000");
+
+interface BankrJobResult {
+  success: boolean;
+  jobId: string;
+  threadId?: string;
+  status: string;
+  response?: string;
+  error?: string;
+}
+
+async function bankrPrompt(prompt: string, threadId?: string): Promise<BankrJobResult> {
+  if (!BANKR_API_KEY) {
+    return { success: false, jobId: "", status: "failed", error: "Bankr API key not configured. Add BANKR_API_KEY to env vars." };
+  }
+
+  try {
+    // 1. Submit prompt
+    const body: any = { prompt };
+    if (threadId) body.threadId = threadId;
+
+    const submitRes = await fetch(`${BANKR_API_URL}/agent/prompt`, {
+      method: "POST",
+      headers: {
+        "X-API-Key": BANKR_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!submitRes.ok) {
+      const errText = await submitRes.text();
+      return { success: false, jobId: "", status: "failed", error: `Bankr API error: ${submitRes.status} ${errText}` };
+    }
+
+    const submitData = await submitRes.json() as any;
+    const jobId = submitData.jobId;
+    const resultThreadId = submitData.threadId;
+
+    if (!jobId) {
+      return { success: false, jobId: "", status: "failed", error: "No job ID returned from Bankr" };
+    }
+
+    // 2. Poll for results (max 60s)
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+
+      const pollRes = await fetch(`${BANKR_API_URL}/agent/job/${jobId}`, {
+        headers: { "X-API-Key": BANKR_API_KEY },
+      });
+
+      if (!pollRes.ok) continue;
+
+      const pollData = await pollRes.json() as any;
+
+      if (pollData.status === "completed") {
+        return {
+          success: true,
+          jobId,
+          threadId: resultThreadId,
+          status: "completed",
+          response: pollData.response || "No response",
+        };
+      }
+
+      if (pollData.status === "failed" || pollData.status === "cancelled") {
+        return {
+          success: false,
+          jobId,
+          threadId: resultThreadId,
+          status: pollData.status,
+          error: pollData.response || pollData.error || "Job failed",
+        };
+      }
+    }
+
+    return { success: false, jobId, status: "timeout", error: "Bankr took too long to respond. Try again!" };
+  } catch (err: any) {
+    return { success: false, jobId: "", status: "failed", error: err.message };
+  }
+}
+
+function isBankrConfigured(): boolean {
+  return !!BANKR_API_KEY;
+}
+
+// ============================================================
 // MAIN BOT
 // ============================================================
 async function main() {
@@ -516,14 +636,19 @@ async function main() {
         `💰 Check your bags (ETH, USDC, WETH, DAI...)\n` +
         `🔄 Swap tokens like a DEX pro\n` +
         `📤 Send crypto to anyone (even ENS names!)\n` +
-        `� Get real-time prices\n` +
-        `� Wrap/unwrap ETH\n\n` +
+        `📊 Get real-time prices\n` +
+        `🔄 Wrap/unwrap ETH\n\n` +
+        `🏦 *Bankr AI Trading:*\n` +
+        `🔥 Find trending tokens on Base\n` +
+        `💎 Hunt low cap gems (<$40k mcap)\n` +
+        `🎯 Snipe tokens instantly\n` +
+        `📊 Deep market research & sentiment\n\n` +
         `*Just talk to me like a human:*\n` +
         `• _"Send 10 USDC to vitalik.eth"_\n` +
         `• _"Swap 0.01 ETH for USDC"_\n` +
-        `• _"What's my balance?"_\n` +
-        `• _"Price of BTC"_\n\n` +
-        `Or use commands: /wallet /balance /price /trade /send /actions\n\n` +
+        `• _"Find low cap gems on Base"_\n` +
+        `• _"Research PEPE"_\n\n` +
+        `Or use commands: /wallet /balance /price /trade /send /trending /lowcap /snipe /research /actions\n\n` +
         `Let's get it! 🚀`,
         { parse_mode: "Markdown" }
       );
@@ -747,30 +872,159 @@ async function main() {
       await ctx.reply(`✅ Unwrap Result:\n\n${result}`);
     });
 
+    // ── BANKR COMMANDS ──────────────────────────────────────
+
+    // /research <token> — Market research via Bankr
+    bot.command("research", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const token = text.replace(/^\/research\s*/i, "").trim();
+      if (!token) {
+        await ctx.reply("📝 Usage: /research <token>\n\nExamples:\n  /research PEPE\n  /research BNKR\n  /research ETH");
+        return;
+      }
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      await ctx.reply(`🔍 Researching ${token.toUpperCase()}... this may take a moment`);
+      const result = await bankrPrompt(`Give me a detailed analysis of ${token}: current price, market cap, 24h volume, 24h change, and brief sentiment. Keep it concise.`);
+      if (result.success) {
+        await ctx.reply(`📊 *${token.toUpperCase()} Research*\n\n${result.response}`, { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply(`Couldn't get research data 😅\n\n${result.error}`);
+      }
+    });
+
+    // /trending — Trending tokens on Base via Bankr
+    bot.command("trending", async (ctx) => {
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      await ctx.reply("🔥 Finding trending tokens on Base... hang tight");
+      const result = await bankrPrompt("What tokens are trending on Base right now? Show me the top 10 with their prices and 24h changes.");
+      if (result.success) {
+        await ctx.reply(`🔥 *Trending on Base*\n\n${result.response}`, { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply(`Couldn't fetch trending tokens 😅\n\n${result.error}`);
+      }
+    });
+
+    // /lowcap — Find low market cap tokens (under MAX_MARKET_CAP)
+    bot.command("lowcap", async (ctx) => {
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      const capStr = (MAX_MARKET_CAP / 1000).toFixed(0);
+      await ctx.reply(`🔎 Hunting for gems under $${capStr}k market cap on Base... 🎯`);
+      const result = await bankrPrompt(
+        `Find me trending or new tokens on Base with a market cap under $${MAX_MARKET_CAP}. ` +
+        `Show token name, symbol, price, market cap, 24h volume, and 24h change. ` +
+        `Focus on tokens with good volume and momentum. List up to 10 tokens.`
+      );
+      if (result.success) {
+        await ctx.reply(
+          `💎 *Low Cap Gems (Under $${capStr}k)*\n\n${result.response}\n\n` +
+          `Use /snipe <token> to buy!`,
+          { parse_mode: "Markdown" }
+        );
+      } else {
+        await ctx.reply(`Couldn't find low cap tokens 😅\n\n${result.error}`);
+      }
+    });
+
+    // /snipe <amount> <token> — Buy a token via Bankr
+    bot.command("snipe", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const match = text.match(/\/snipe\s+(\$?[\d.]+)\s+(.+)/i);
+      if (!match) {
+        await ctx.reply(
+          "🎯 *Snipe Format:*\n\n" +
+          "/snipe <amount> <token>\n\n" +
+          "Examples:\n" +
+          "  /snipe $5 PEPE\n" +
+          "  /snipe $10 BNKR\n" +
+          "  /snipe 0.01 ETH worth of DEGEN",
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      const amount = match[1];
+      const token = match[2].trim().toUpperCase();
+      await ctx.reply(`🎯 Sniping ${amount} of ${token} on Base... 🔫`);
+      const result = await bankrPrompt(`Buy ${amount} of ${token} on Base`);
+      if (result.success) {
+        await ctx.reply(
+          `✅ *Snipe Complete!* 🎯\n\n${result.response}`,
+          { parse_mode: "Markdown" }
+        );
+      } else {
+        await ctx.reply(`Snipe failed 😬\n\n${result.error}\n\nMake sure your Bankr wallet has funds!`);
+      }
+    });
+
+    // /bankr <prompt> — Raw Bankr prompt for anything
+    bot.command("bankr", async (ctx) => {
+      const text = ctx.message?.text || "";
+      const prompt = text.replace(/^\/bankr\s*/i, "").trim();
+      if (!prompt) {
+        await ctx.reply(
+          "🏦 *Bankr AI — Direct Prompt*\n\n" +
+          "Send any trading/DeFi command:\n\n" +
+          "  /bankr What tokens are trending on Base?\n" +
+          "  /bankr Buy $5 of PEPE on Base\n" +
+          "  /bankr Show my portfolio\n" +
+          "  /bankr Technical analysis on ETH\n" +
+          "  /bankr Set stop loss for ETH at $2500",
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+      if (!isBankrConfigured()) {
+        await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+        return;
+      }
+      await ctx.reply("🏦 Processing with Bankr AI...");
+      const result = await bankrPrompt(prompt);
+      if (result.success) {
+        await ctx.reply(`🏦 *Bankr*\n\n${result.response}`, { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply(`Bankr request failed 😅\n\n${result.error}`);
+      }
+    });
+
     // ── /actions ────────────────────────────────────────────
     bot.command("actions", async (ctx) => {
       await ctx.reply(
         "🤖 *AIBINGWA Capabilities:*\n\n" +
         "*Wallet*\n" +
         "💼 /wallet — View address & balances\n" +
-        "💰 /balance — All token balances (ETH, USDC, WETH, DAI)\n\n" +
-        "*Trading*\n" +
+        "💰 /balance — All token balances\n\n" +
+        "*Trading (AgentKit)*\n" +
         "🔄 /trade 5 usdc eth — Swap tokens\n" +
         "🔄 /wrap 0.01 — Wrap ETH to WETH\n" +
         "🔄 /unwrap 0.01 — Unwrap WETH to ETH\n\n" +
+        "*Trading (Bankr AI)* 🏦\n" +
+        "🎯 /snipe $5 PEPE — Buy tokens\n" +
+        "🔍 /research ETH — Market research\n" +
+        "� /trending — Trending tokens on Base\n" +
+        "💎 /lowcap — Low cap gems (<$40k mcap)\n" +
+        "🏦 /bankr <prompt> — Any Bankr command\n\n" +
         "*Transfers*\n" +
-        "📤 /send 10 usdc to vitalik.eth\n" +
-        "📤 /send 0.01 eth to 0x1234...\n\n" +
+        "� /send 10 usdc to vitalik.eth\n\n" +
         "*Prices*\n" +
-        "📊 /price eth — ETH price\n" +
-        "📊 /price btc — BTC price\n" +
-        "📊 /price sol — SOL price\n\n" +
+        "📊 /price eth — Token prices\n\n" +
         "*Natural Language*\n" +
         'Just type naturally like:\n' +
         '• "Send 10 USDC to vitalik.eth"\n' +
         '• "Swap 0.01 ETH for USDC"\n' +
-        '• "What\'s my USDC balance?"\n' +
-        '• "Price of BTC"',
+        '• "Find low cap gems on Base"\n' +
+        '• "Research PEPE"',
         { parse_mode: "Markdown" }
       );
     });
@@ -953,6 +1207,79 @@ async function main() {
           await ctx.reply(`🔄 Unwrapping ${intent.amount} WETH...`);
           const result = await executeAction(agent, "WethActionProvider_unwrap_eth", { amountToUnwrap: intent.amount });
           await ctx.reply(`✅ ${result}`);
+          break;
+        }
+
+        case "research": {
+          if (!isBankrConfigured()) {
+            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+            break;
+          }
+          const rToken = intent.token || "eth";
+          await ctx.reply(`🔍 Researching ${rToken.toUpperCase()}... this may take a moment`);
+          const rResult = await bankrPrompt(`Give me a detailed analysis of ${rToken}: current price, market cap, 24h volume, 24h change, and brief sentiment. Keep it concise.`);
+          if (rResult.success) {
+            await ctx.reply(`📊 *${rToken.toUpperCase()} Research*\n\n${rResult.response}`, { parse_mode: "Markdown" });
+          } else {
+            await ctx.reply(`Couldn't get research data 😅\n\n${rResult.error}`);
+          }
+          break;
+        }
+
+        case "trending": {
+          if (!isBankrConfigured()) {
+            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+            break;
+          }
+          await ctx.reply("🔥 Finding trending tokens on Base... hang tight");
+          const tResult = await bankrPrompt("What tokens are trending on Base right now? Show me the top 10 with their prices and 24h changes.");
+          if (tResult.success) {
+            await ctx.reply(`🔥 *Trending on Base*\n\n${tResult.response}`, { parse_mode: "Markdown" });
+          } else {
+            await ctx.reply(`Couldn't fetch trending tokens 😅\n\n${tResult.error}`);
+          }
+          break;
+        }
+
+        case "lowcap": {
+          if (!isBankrConfigured()) {
+            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+            break;
+          }
+          const capStr = (MAX_MARKET_CAP / 1000).toFixed(0);
+          await ctx.reply(`🔎 Hunting for gems under $${capStr}k market cap on Base... 🎯`);
+          const lcResult = await bankrPrompt(
+            `Find me trending or new tokens on Base with a market cap under $${MAX_MARKET_CAP}. ` +
+            `Show token name, symbol, price, market cap, 24h volume, and 24h change. ` +
+            `Focus on tokens with good volume and momentum. List up to 10 tokens.`
+          );
+          if (lcResult.success) {
+            await ctx.reply(
+              `💎 *Low Cap Gems (Under $${capStr}k)*\n\n${lcResult.response}\n\nUse /snipe <amount> <token> to buy!`,
+              { parse_mode: "Markdown" }
+            );
+          } else {
+            await ctx.reply(`Couldn't find low cap tokens 😅\n\n${lcResult.error}`);
+          }
+          break;
+        }
+
+        case "snipe": {
+          if (!isBankrConfigured()) {
+            await ctx.reply("⚠️ Bankr API not configured yet. Add BANKR_API_KEY to env vars.");
+            break;
+          }
+          if (!intent.amount || !intent.token) {
+            await ctx.reply("🎯 Try: \"snipe $5 PEPE\" or /snipe $5 PEPE");
+            break;
+          }
+          await ctx.reply(`🎯 Sniping ${intent.amount} of ${intent.token.toUpperCase()} on Base... 🔫`);
+          const sResult = await bankrPrompt(`Buy ${intent.amount} of ${intent.token} on Base`);
+          if (sResult.success) {
+            await ctx.reply(`✅ *Snipe Complete!* 🎯\n\n${sResult.response}`, { parse_mode: "Markdown" });
+          } else {
+            await ctx.reply(`Snipe failed 😬\n\n${sResult.error}\n\nMake sure your Bankr wallet has funds!`);
+          }
           break;
         }
 
