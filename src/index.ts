@@ -12,7 +12,14 @@ import {
 import { createPublicClient, http, formatUnits, parseUnits, isAddress, getAddress } from "viem";
 import { base, mainnet } from "viem/chains";
 import { normalize } from "viem/ens";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import "dotenv/config";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const WALLET_DATA_FILE = join(__dirname, "..", "wallet-data.json");
 
 // ============================================================
 // TOKEN REGISTRY — aliases, addresses, decimals, Pyth feed IDs
@@ -102,17 +109,89 @@ const baseClient = createPublicClient({ chain: base, transport: http() });
 const mainnetClient = createPublicClient({ chain: mainnet, transport: http() });
 
 // ============================================================
+// WALLET PERSISTENCE
+// ============================================================
+interface WalletData {
+  ownerAddress: string;
+  smartWalletAddress: string;
+}
+
+function loadWalletData(): WalletData | null {
+  // First check env vars (for Railway/deployment)
+  if (process.env.OWNER_ADDRESS && process.env.SMART_WALLET_ADDRESS) {
+    console.log("📂 Loading wallet from env vars");
+    return {
+      ownerAddress: process.env.OWNER_ADDRESS,
+      smartWalletAddress: process.env.SMART_WALLET_ADDRESS,
+    };
+  }
+  // Then check file (for local dev)
+  try {
+    if (existsSync(WALLET_DATA_FILE)) {
+      const data = JSON.parse(readFileSync(WALLET_DATA_FILE, "utf-8"));
+      console.log("📂 Loading wallet from file:", data.smartWalletAddress);
+      return data;
+    }
+  } catch {}
+  return null;
+}
+
+function saveWalletData(data: WalletData): void {
+  try {
+    writeFileSync(WALLET_DATA_FILE, JSON.stringify(data, null, 2));
+    console.log("💾 Wallet data saved to", WALLET_DATA_FILE);
+    console.log("   Owner:", data.ownerAddress);
+    console.log("   Smart Wallet:", data.smartWalletAddress);
+    console.log("\n⚠️  Add these to your Railway env vars for persistence:");
+    console.log(`   OWNER_ADDRESS=${data.ownerAddress}`);
+    console.log(`   SMART_WALLET_ADDRESS=${data.smartWalletAddress}`);
+  } catch (err) {
+    console.error("Failed to save wallet data:", err);
+  }
+}
+
+// ============================================================
 // AGENTKIT INITIALIZATION
 // ============================================================
 async function initializeAgentKit(): Promise<AgentKit> {
   if (agentKit) return agentKit;
 
-  const walletProvider = await CdpSmartWalletProvider.configureWithWallet({
+  const savedWallet = loadWalletData();
+
+  const config: any = {
     apiKeyId: process.env.CDP_API_KEY_ID!,
     apiKeySecret: process.env.CDP_API_KEY_SECRET!,
     walletSecret: process.env.CDP_WALLET_SECRET!,
     networkId: (process.env.NETWORK_ID || "base-mainnet") as any,
-  });
+  };
+
+  // If we have saved wallet data, pass owner + address to reload the SAME wallet
+  if (savedWallet) {
+    config.owner = savedWallet.ownerAddress;
+    config.address = savedWallet.smartWalletAddress;
+    console.log("🔑 Reloading existing wallet:", savedWallet.smartWalletAddress);
+  } else {
+    console.log("🆕 Creating new wallet (first run)...");
+  }
+
+  const walletProvider = await CdpSmartWalletProvider.configureWithWallet(config);
+
+  // Export and save wallet data for next time
+  const exported = await walletProvider.exportWallet();
+  const walletData: WalletData = {
+    ownerAddress: exported.ownerAddress,
+    smartWalletAddress: exported.address,
+  };
+
+  // Cache the address
+  cachedWalletAddress = exported.address;
+
+  // Save if this is a new wallet
+  if (!savedWallet) {
+    saveWalletData(walletData);
+  }
+
+  console.log("✅ Wallet address:", exported.address);
 
   agentKit = await AgentKit.from({
     walletProvider,
