@@ -748,11 +748,11 @@ async function main() {
             return;
           }
           const token = resolveToken(intent.token);
-          if (!token) { await ctx.reply(`❌ Unknown token: ${intent.token}`); return; }
+          if (!token) { await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`); return; }
 
           await ctx.reply(`🔍 Resolving recipient...`);
           const { address: addr, display } = await resolveAddress(intent.recipient);
-          if (!addr) { await ctx.reply(`❌ Could not resolve: ${intent.recipient}`); return; }
+          if (!addr) { await ctx.reply(`Sorry, I couldn't find that address 🤷‍♂️ Try again or check the address!`); return; }
 
           await ctx.reply(`📤 Sending ${intent.amount} ${token.symbol} to ${display}...`);
           try {
@@ -768,31 +768,63 @@ async function main() {
             }
             await ctx.reply(`✅ Sent!\n\n${result}`);
           } catch (err: any) {
-            await ctx.reply(`❌ Send failed: ${err.message}`);
+            if (err.message.includes('insufficient')) {
+              await ctx.reply(`Not enough ${token.symbol} in your wallet 💸\n\nCheck your balance with /balance`);
+            } else {
+              await ctx.reply(`Send failed: ${err.message}\n\nTry again or check your balance!`);
+            }
           }
           break;
         }
 
         case "trade": {
           if (!intent.amount || !intent.fromToken || !intent.toToken) {
-            await ctx.reply("📝 Try: \"Trade 5 USDC for ETH\"");
+            await ctx.reply("📝 Try: \"Trade 5 USDC for ETH\" or use /trade 5 usdc eth");
             return;
           }
           const from = resolveToken(intent.fromToken);
           const to = resolveToken(intent.toToken);
-          if (!from) { await ctx.reply(`❌ Unknown token: ${intent.fromToken}`); return; }
-          if (!to) { await ctx.reply(`❌ Unknown token: ${intent.toToken}`); return; }
+          if (!from) { 
+            await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`);
+            return;
+          }
+          if (!to) { 
+            await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`);
+            return;
+          }
 
-          await ctx.reply(`🔄 Trading ${intent.amount} ${from.symbol} for ${to.symbol}...`);
+          await ctx.reply(`🔄 Swapping ${intent.amount} ${from.symbol} → ${to.symbol}...`);
           try {
             const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-              fromAssetId: from.address || from.symbol.toLowerCase(),
-              toAssetId: to.address || to.symbol.toLowerCase(),
+              fromAssetId: from.symbol.toLowerCase(),
+              toAssetId: to.symbol.toLowerCase(),
               amount: intent.amount,
             });
-            await ctx.reply(`✅ Trade Result:\n\n${result}`);
+            
+            // Parse result to check for errors
+            let resultText = result;
+            if (result.includes('"success":false') || result.includes('"error"')) {
+              try {
+                const parsed = JSON.parse(result);
+                if (!parsed.success && parsed.error) {
+                  await ctx.reply(`Swap didn't go through 😅\n\nReason: ${parsed.error}\n\nMake sure you have enough ${from.symbol} and the market is available!`);
+                  return;
+                }
+              } catch {}
+            }
+            
+            await ctx.reply(`✅ Boom! Swapped ${intent.amount} ${from.symbol} for ${to.symbol}!\n\n${resultText}`);
           } catch (err: any) {
-            await ctx.reply(`❌ Trade failed: ${err.message}`);
+            const msg = err.message || String(err);
+            if (msg.includes('undefined')) {
+              await ctx.reply(`Swap failed 😬\n\nLooks like there's an issue with that pair. Try a different token combo!`);
+            } else if (msg.includes('insufficient')) {
+              await ctx.reply(`Not enough ${from.symbol} in your wallet 💸\n\nCheck your balance with /balance`);
+            } else if (msg.includes('timeout')) {
+              await ctx.reply(`Swap is taking too long ⏱️\n\nTry again in a moment!`);
+            } else {
+              await ctx.reply(`Swap failed: ${msg}\n\nTry again or check your balance!`);
+            }
           }
           break;
         }
