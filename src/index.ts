@@ -561,7 +561,7 @@ async function main() {
       }
     });
 
-    // Message handler — routes ALL messages through the agent brain (v3: no empty promises, continuous polymarket loop, deep memory)
+    // Message handler — routes ALL messages through the agent brain (v4: polymarket vs leverage clarity, no confusion)
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text;
       const userName = ctx.from?.first_name || "anon";
