@@ -35,7 +35,7 @@ export class AgentBrain {
   private reflections: string[] = [];
   private model: string;
 
-  constructor(skills: SkillRegistry, model = "gpt-4o-mini") {
+  constructor(skills: SkillRegistry, model = "gpt-4o") {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       throw new Error("OPENAI_API_KEY is required for the agent brain");
