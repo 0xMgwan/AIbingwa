@@ -2,6 +2,7 @@ import { SkillRegistry, Skill } from "./skills.js";
 import { AgentKit } from "@coinbase/agentkit";
 import { getPerformanceSummary, getOpenPositions, getTradeHistory, loadMemory } from "./memory.js";
 import { BankrX402Client } from "./bankr-x402.js";
+import { TwitterClient } from "./twitter.js";
 
 // ============================================================
 // REGISTER ALL SKILLS — Called once at startup
@@ -37,6 +38,7 @@ interface SkillDeps {
   isBankrConfigured: () => boolean;
   trader: { scanMarket: () => Promise<string>; toggleAutoTrade: (on: boolean) => string; updateSettings: (u: any) => string; getMemory: () => any };
   x402Client?: BankrX402Client;
+  twitterClient?: TwitterClient;
 }
 
 export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): void {
@@ -771,6 +773,75 @@ export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): voi
       return result.success ? result.response || "No data" : `Failed: ${result.error}`;
     },
   });
+
+  // ══════════════════════════════════════════════════════════
+  // TWITTER SKILLS — Autonomous posting & engagement
+  // ══════════════════════════════════════════════════════════
+
+  if (deps.twitterClient && deps.twitterClient.isAvailable()) {
+    registry.register({
+      name: "tweet",
+      description: "Post a tweet to X (Twitter). Max 280 characters.",
+      category: "utility",
+      parameters: [
+        { name: "text", type: "string", description: "Tweet text (max 280 chars)", required: true },
+      ],
+      execute: async (params) => {
+        const result = await deps.twitterClient!.tweet(params.text);
+        return result.success ? `✅ Tweet posted: ${params.text}` : `❌ Tweet failed: ${result.error}`;
+      },
+    });
+
+    registry.register({
+      name: "tweet_trade_alert",
+      description: "Post a trade alert tweet with entry, target, and stop loss",
+      category: "utility",
+      parameters: [
+        { name: "token", type: "string", description: "Token symbol (e.g., PEPE)", required: true },
+        { name: "entry", type: "string", description: "Entry price", required: true },
+        { name: "target", type: "string", description: "Take profit target", required: true },
+        { name: "stop_loss", type: "string", description: "Stop loss level", required: true },
+      ],
+      execute: async (params) => {
+        const text = `🚀 TRADE ALERT: $${params.token}\n📍 Entry: ${params.entry}\n🎯 Target: ${params.target}\n🛑 SL: ${params.stop_loss}\n#DeFi #Trading`;
+        const result = await deps.twitterClient!.tweet(text);
+        return result.success ? `✅ Trade alert posted` : `❌ Failed: ${result.error}`;
+      },
+    });
+
+    registry.register({
+      name: "tweet_daily_report",
+      description: "Post daily P&L and sustainability report to Twitter",
+      category: "utility",
+      parameters: [
+        { name: "pnl", type: "string", description: "Daily P&L (e.g., +$12.50)", required: true },
+        { name: "win_rate", type: "string", description: "Win rate percentage (e.g., 65%)", required: true },
+        { name: "status", type: "string", description: "Status (e.g., 'Self-sustaining' or 'Growing')", required: true },
+      ],
+      execute: async (params) => {
+        const text = `📊 Daily Report\n💰 P&L: ${params.pnl}\n📈 Win Rate: ${params.win_rate}\n🎯 Status: ${params.status}\n#AI #Trading #Autonomous`;
+        const result = await deps.twitterClient!.tweet(text);
+        return result.success ? `✅ Daily report posted` : `❌ Failed: ${result.error}`;
+      },
+    });
+
+    registry.register({
+      name: "tweet_gem_find",
+      description: "Post a gem discovery tweet with token details",
+      category: "utility",
+      parameters: [
+        { name: "token", type: "string", description: "Token symbol", required: true },
+        { name: "mcap", type: "string", description: "Market cap", required: true },
+        { name: "volume", type: "string", description: "24h volume", required: true },
+        { name: "score", type: "string", description: "Viability score (0-100)", required: true },
+      ],
+      execute: async (params) => {
+        const text = `💎 GEM FOUND: $${params.token}\n📊 MCap: ${params.mcap}\n💧 Vol: ${params.volume}\n⭐ Score: ${params.score}/100\n#LowCap #DeFi`;
+        const result = await deps.twitterClient!.tweet(text);
+        return result.success ? `✅ Gem post shared` : `❌ Failed: ${result.error}`;
+      },
+    });
+  }
 
   // ══════════════════════════════════════════════════════════
   // SELF-SUSTAINING AGENT SKILLS — Revenue & Cost Tracking

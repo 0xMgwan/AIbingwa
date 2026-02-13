@@ -22,6 +22,7 @@ import { SkillRegistry } from "./skills.js";
 import { AgentBrain } from "./brain.js";
 import { registerAllSkills } from "./register-skills.js";
 import { BankrX402Client } from "./bankr-x402.js";
+import { TwitterClient } from "./twitter.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1075,6 +1076,9 @@ async function main() {
     // Initialize x402 client for self-sustaining micropayments
     const x402Client = new BankrX402Client();
 
+    // Initialize Twitter client for autonomous posting
+    const twitterClient = new TwitterClient();
+
     registerAllSkills(skillRegistry, {
       agent,
       bankrPrompt,
@@ -1093,6 +1097,7 @@ async function main() {
       isBankrConfigured,
       trader,
       x402Client,
+      twitterClient,
     });
 
     if (process.env.OPENAI_API_KEY) {
