@@ -688,14 +688,32 @@ async function main() {
         }
 
         default: {
-          await ctx.reply(
-            "Hmm, I didn't quite catch that 🤔\n\n" +
-            "Try something like:\n" +
-            '• "Check my balance"\n' +
-            '• "Price of ETH"\n' +
-            '• "Send 10 USDC to vitalik.eth"\n\n' +
-            "Or hit /help to see everything I can do!"
-          );
+          // Route to LLM brain — it knows all 50+ skills
+          if (aibingwa.isBrainOnline()) {
+            await ctx.reply("🧠 Thinking...");
+            try {
+              const response = await aibingwa.processMessage(
+                ctx.chat.id.toString(),
+                ctx.from?.first_name || "anon",
+                text,
+              );
+              await ctx.reply(response, { parse_mode: "Markdown" }).catch(() => {
+                // Fallback without markdown if parsing fails
+                ctx.reply(response);
+              });
+            } catch (err: any) {
+              await ctx.reply(`❌ Error: ${err.message}`);
+            }
+          } else {
+            await ctx.reply(
+              "Hmm, I didn't quite catch that 🤔\n\n" +
+              "Try something like:\n" +
+              '• "Check my balance"\n' +
+              '• "Price of ETH"\n' +
+              '• "Send 10 USDC to vitalik.eth"\n\n' +
+              "Or hit /help to see everything I can do!"
+            );
+          }
         }
       }
     });
