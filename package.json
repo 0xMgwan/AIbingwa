@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@coinbase/agentkit": "latest",
-    "agent-twitter-client": "^0.0.18",
     "dotenv": "^16.4.5",
     "grammy": "^1.30.0",
     "openai": "^6.21.0",
+    "twitter-api-v2": "^1.29.0",
     "viem": "^2.45.3",
     "x402-fetch": "^1.1.0"
   },

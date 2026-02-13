@@ -1,85 +1,63 @@
-import { Scraper } from "agent-twitter-client";
+import { TwitterApi } from "twitter-api-v2";
 
 // ============================================================
-// TWITTER CLIENT — Autonomous agent tweeting & engagement
+// TWITTER CLIENT — Official X API v2 with OAuth 1.0a
 // ============================================================
 
 export class TwitterClient {
-  private scraper: Scraper | null = null;
+  private client: TwitterApi | null = null;
   private initialized = false;
 
   constructor() {
-    const consumerKey = process.env.X_CONSUMER_KEY;
-    const consumerSecret = process.env.X_CONSUMER_SECRET;
+    const appKey = process.env.X_CONSUMER_KEY;
+    const appSecret = process.env.X_CONSUMER_SECRET;
     const accessToken = process.env.X_ACCESS_TOKEN;
-    const accessTokenSecret = process.env.X_ACCESS_TOKEN_SECRET;
+    const accessSecret = process.env.X_ACCESS_TOKEN_SECRET;
 
-    if (!consumerKey || !consumerSecret || !accessToken || !accessTokenSecret) {
+    if (!appKey || !appSecret || !accessToken || !accessSecret) {
       console.log("ℹ️ No X credentials — Twitter integration disabled");
       return;
     }
 
     try {
-      this.scraper = new Scraper({
-        auth: {
-          username: process.env.X_USERNAME || "",
-          password: process.env.X_PASSWORD || "",
-          email: process.env.X_EMAIL || "",
-        },
+      this.client = new TwitterApi({
+        appKey,
+        appSecret,
+        accessToken,
+        accessSecret,
       });
       this.initialized = true;
-      console.log("🐦 Twitter client initialized");
+      console.log("🐦 Twitter client initialized (X API v2)");
     } catch (err: any) {
       console.warn("⚠️ Twitter init failed:", err.message);
     }
   }
 
   isAvailable(): boolean {
-    return this.initialized && !!this.scraper;
+    return this.initialized && !!this.client;
   }
 
   async tweet(text: string): Promise<{ success: boolean; tweetId?: string; error?: string }> {
-    if (!this.scraper) {
+    if (!this.client) {
       return { success: false, error: "Twitter client not initialized" };
     }
 
     try {
-      // Validate tweet length (280 chars max)
       if (text.length > 280) {
         return { success: false, error: `Tweet too long (${text.length}/280 chars)` };
       }
 
-      const result = await this.scraper.sendTweet(text);
-      console.log(`🐦 Tweet posted: ${text.slice(0, 50)}...`);
-      return { success: true, tweetId: result };
+      const result = await this.client.v2.tweet(text);
+      console.log(`🐦 Tweet posted (${result.data.id}): ${text.slice(0, 50)}...`);
+      return { success: true, tweetId: result.data.id };
     } catch (err: any) {
       console.error("❌ Tweet failed:", err.message);
       return { success: false, error: err.message };
     }
   }
 
-  async tweetWithImage(text: string, imagePath: string): Promise<{ success: boolean; tweetId?: string; error?: string }> {
-    if (!this.scraper) {
-      return { success: false, error: "Twitter client not initialized" };
-    }
-
-    try {
-      if (text.length > 280) {
-        return { success: false, error: `Tweet too long (${text.length}/280 chars)` };
-      }
-
-      // Note: agent-twitter-client may not support image uploads directly
-      // This is a placeholder for future enhancement
-      const result = await this.scraper.sendTweet(text);
-      console.log(`🐦 Tweet with image posted: ${text.slice(0, 50)}...`);
-      return { success: true, tweetId: result };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  }
-
   async replyToTweet(tweetId: string, text: string): Promise<{ success: boolean; replyId?: string; error?: string }> {
-    if (!this.scraper) {
+    if (!this.client) {
       return { success: false, error: "Twitter client not initialized" };
     }
 
@@ -88,16 +66,16 @@ export class TwitterClient {
         return { success: false, error: `Reply too long (${text.length}/280 chars)` };
       }
 
-      const result = await this.scraper.sendTweet(text, tweetId);
+      const result = await this.client.v2.reply(text, tweetId);
       console.log(`🐦 Reply posted to ${tweetId}`);
-      return { success: true, replyId: result };
+      return { success: true, replyId: result.data.id };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
   }
 
-  async quoteTweet(tweetId: string, text: string): Promise<{ success: boolean; quoteId?: string; error?: string }> {
-    if (!this.scraper) {
+  async quoteTweet(tweetUrl: string, text: string): Promise<{ success: boolean; quoteId?: string; error?: string }> {
+    if (!this.client) {
       return { success: false, error: "Twitter client not initialized" };
     }
 
@@ -106,29 +84,25 @@ export class TwitterClient {
         return { success: false, error: `Quote too long (${text.length}/280 chars)` };
       }
 
-      // Quote tweet as reply with link
-      const tweetUrl = `https://twitter.com/i/web/status/${tweetId}`;
-      const fullText = `${text}\n\n${tweetUrl}`;
-
-      if (fullText.length > 280) {
-        return { success: false, error: "Quote text + link exceeds 280 chars" };
-      }
-
-      const result = await this.scraper.sendTweet(fullText);
+      const result = await this.client.v2.tweet({
+        text,
+        quote_tweet_id: tweetUrl,
+      });
       console.log(`🐦 Quote tweet posted`);
-      return { success: true, quoteId: result };
+      return { success: true, quoteId: result.data.id };
     } catch (err: any) {
       return { success: false, error: err.message };
     }
   }
 
   async likeTweet(tweetId: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.scraper) {
+    if (!this.client) {
       return { success: false, error: "Twitter client not initialized" };
     }
 
     try {
-      await this.scraper.likeTweet(tweetId);
+      const me = await this.client.v2.me();
+      await this.client.v2.like(me.data.id, tweetId);
       console.log(`❤️ Liked tweet ${tweetId}`);
       return { success: true };
     } catch (err: any) {
@@ -136,13 +110,14 @@ export class TwitterClient {
     }
   }
 
-  async retweetTweet(tweetId: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.scraper) {
+  async retweet(tweetId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.client) {
       return { success: false, error: "Twitter client not initialized" };
     }
 
     try {
-      await this.scraper.retweetTweet(tweetId);
+      const me = await this.client.v2.me();
+      await this.client.v2.retweet(me.data.id, tweetId);
       console.log(`🔄 Retweeted ${tweetId}`);
       return { success: true };
     } catch (err: any) {
@@ -150,39 +125,16 @@ export class TwitterClient {
     }
   }
 
-  async getTweet(tweetId: string): Promise<any> {
-    if (!this.scraper) {
-      return null;
+  async getMe(): Promise<{ success: boolean; username?: string; error?: string }> {
+    if (!this.client) {
+      return { success: false, error: "Twitter client not initialized" };
     }
 
     try {
-      const tweet = await this.scraper.getTweet(tweetId);
-      return tweet;
+      const me = await this.client.v2.me();
+      return { success: true, username: me.data.username };
     } catch (err: any) {
-      console.error("Failed to fetch tweet:", err.message);
-      return null;
-    }
-  }
-
-  async searchTweets(query: string, maxResults: number = 10): Promise<any[]> {
-    if (!this.scraper) {
-      return [];
-    }
-
-    try {
-      const tweets: any[] = [];
-      let count = 0;
-
-      for await (const tweet of this.scraper.searchTweets(query, maxResults)) {
-        tweets.push(tweet);
-        count++;
-        if (count >= maxResults) break;
-      }
-
-      return tweets;
-    } catch (err: any) {
-      console.error("Search failed:", err.message);
-      return [];
+      return { success: false, error: err.message };
     }
   }
 }
