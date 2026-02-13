@@ -561,170 +561,36 @@ async function main() {
       }
     });
 
-    // Message handler
+    // Message handler — use the package's built-in processMessage for context-aware conversations
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text;
       const userName = ctx.from?.first_name || "anon";
       
       // Log user question
       console.log(`\n📨 User (${userName}): ${text}`);
+
+      // Show typing indicator
+      await ctx.api.sendChatAction(ctx.chat.id, "typing");
       
-      const intent = parseNaturalLanguage(text);
-
-      switch (intent.action) {
-        case "send": {
-          if (!intent.amount || !intent.token || !intent.recipient) {
-            await ctx.reply("📝 Try: \"Send 10 USDC to vitalik.eth\"");
-            return;
-          }
-          const token = resolveToken(intent.token);
-          if (!token) {
-            await ctx.reply(`Unknown token: ${intent.token}`);
-            return;
-          }
-          const addr = await resolveAddress(intent.recipient);
-          if (!addr.address) {
-            await ctx.reply(`Can't resolve address: ${intent.recipient}`);
-            return;
-          }
-          await ctx.reply(`📤 Sending ${intent.amount} ${token.symbol} to ${addr.display}...`);
-          try {
-            const result = await executeAction(agent, "WalletActionProvider_send_funds", {
-              amount: intent.amount,
-              to: addr.address,
-              assetId: token.address || "eth",
-            });
-            await ctx.reply(`✅ Sent!\n\n${result}`);
-          } catch (err: any) {
-            const msg: string = err.message || String(err);
-            if (msg.includes('insufficient')) {
-              await ctx.reply(`Not enough ${token.symbol} in your wallet 💸\n\nCheck your balance with /balance`);
-            } else {
-              await ctx.reply(`Send failed 😬\n\n${msg}\n\nTry again or check your balance!`);
-            }
-          }
-          break;
-        }
-
-        case "trade": {
-          if (!intent.amount || !intent.fromToken || !intent.toToken) {
-            await ctx.reply("📝 Try: \"Trade 5 USDC for ETH\" or use /trade 5 usdc eth");
-            return;
-          }
-          const from = resolveToken(intent.fromToken);
-          const to = resolveToken(intent.toToken);
-          if (!from || !to) {
-            await ctx.reply(`Hmm, I don't know that token 🤔 Try: eth, usdc, weth, dai, btc, sol, cbeth`);
-            return;
-          }
-          await ctx.reply(`🔄 Swapping ${intent.amount} ${from.symbol} → ${to.symbol}...`);
-          try {
-            const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-              fromToken: from.address,
-              toToken: to.address,
-              fromAmount: intent.amount,
-            });
-            await ctx.reply(`✅ Swap completed!\n\n${result}`);
-          } catch (err: any) {
-            await ctx.reply(`Swap failed: ${err.message}\n\nTry again or check your balance!`);
-          }
-          break;
-        }
-
-        case "balance": {
-          await ctx.reply("🔍 Checking balances...");
-          try {
-            const walletAddr = await getWalletAddress(agent);
-            const ethBal = await getEthBalance(walletAddr);
-            const usdcBal = await getTokenBalance(TOKEN_REGISTRY.usdc.address, walletAddr, 6);
-            const wethBal = await getTokenBalance(TOKEN_REGISTRY.weth.address, walletAddr, 18);
-            await ctx.reply(formatBalanceResponse([
-              { symbol: "ETH", balance: ethBal },
-              { symbol: "USDC", balance: usdcBal },
-              { symbol: "WETH", balance: wethBal },
-            ]));
-          } catch (err: any) {
-            await ctx.reply(`❌ Error: ${err.message}`);
-          }
-          break;
-        }
-
-        case "price": {
-          const token = resolveToken(intent.token || "eth");
-          if (!token || !token.pythFeedId) {
-            await ctx.reply(`❌ Unknown token: ${intent.token}`);
-            return;
-          }
-          await ctx.reply(`📊 Fetching ${token.symbol} price...`);
-          const result = await executeAction(agent, "PythActionProvider_fetch_price", { priceFeedID: token.pythFeedId });
-          await ctx.reply(formatPriceResponse(token.symbol, result));
-          break;
-        }
-
-        case "wallet": {
-          const addr = await getWalletAddress(agent);
-          const ethBal = await getEthBalance(addr);
-          await ctx.reply(`💼 Wallet\n\nAddress: ${addr}\nETH: ${parseFloat(ethBal).toFixed(6)}`);
-          break;
-        }
-
-        case "wrap": {
-          await ctx.reply(`🔄 Wrapping ${intent.amount} ETH...`);
-          const result = await executeAction(agent, "WethActionProvider_wrap_eth", { amountToWrap: intent.amount });
-          await ctx.reply(`✅ ${result}`);
-          break;
-        }
-
-        case "unwrap": {
-          await ctx.reply(`🔄 Unwrapping ${intent.amount} WETH...`);
-          const result = await executeAction(agent, "WethActionProvider_unwrap_eth", { amountToUnwrap: intent.amount });
-          await ctx.reply(`✅ ${result}`);
-          break;
-        }
-
-        case "greet": {
-          await ctx.reply(getRandomResponse(GREETINGS));
-          break;
-        }
-
-        case "casual": {
-          await ctx.reply(intent.casualResponse || "What's good? 🤝");
-          break;
-        }
-
-        default: {
-          // Route to LLM brain — it knows all 50+ skills
-          if (aibingwa.isBrainOnline()) {
-            // Show typing indicator
-            await ctx.api.sendChatAction(ctx.chat.id, "typing");
-            try {
-              const response = await aibingwa.processMessage(
-                ctx.chat.id.toString(),
-                ctx.from?.first_name || "anon",
-                text,
-              );
-              // Log response
-              console.log(`🤖 Bot: ${response.substring(0, 200)}${response.length > 200 ? "..." : ""}\n`);
-              
-              await ctx.reply(response, { parse_mode: "Markdown" }).catch(() => {
-                // Fallback without markdown if parsing fails
-                ctx.reply(response);
-              });
-            } catch (err: any) {
-              console.log(`❌ Error: ${err.message}\n`);
-              await ctx.reply(`❌ Error: ${err.message}`);
-            }
-          } else {
-            await ctx.reply(
-              "Hmm, I didn't quite catch that 🤔\n\n" +
-              "Try something like:\n" +
-              '• "Check my balance"\n' +
-              '• "Price of ETH"\n' +
-              '• "Send 10 USDC to vitalik.eth"\n\n' +
-              "Or hit /help to see everything I can do!"
-            );
-          }
-        }
+      try {
+        // Route ALL messages through the agent's brain
+        // This handles conversation context, follow-ups, and all 50+ skills
+        const response = await aibingwa.processMessage(
+          ctx.chat.id.toString(),
+          userName,
+          text,
+        );
+        
+        // Log response
+        console.log(`🤖 Agent: ${response.substring(0, 200)}${response.length > 200 ? "..." : ""}\n`);
+        
+        await ctx.reply(response, { parse_mode: "Markdown" }).catch(() => {
+          // Fallback without markdown if parsing fails
+          ctx.reply(response);
+        });
+      } catch (err: any) {
+        console.log(`❌ Error: ${err.message}\n`);
+        await ctx.reply(`❌ Error: ${err.message}`);
       }
     });
 
