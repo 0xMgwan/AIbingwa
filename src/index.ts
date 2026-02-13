@@ -499,6 +499,7 @@ async function main() {
     // Register ALL skills from the package (Bankr, trading, research, leverage, NFT, etc.)
     registerAllSkills(aibingwa.skills, {
       bankrPrompt: aibingwa.getBankrPrompt(),
+      agentInstance: aibingwa,
       executeAction: (actionName: string, args?: Record<string, any>) => executeAction(agent, actionName, args),
       getWalletAddress: () => getWalletAddress(agent),
       getEthBalance,
