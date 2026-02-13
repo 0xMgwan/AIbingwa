@@ -564,6 +564,11 @@ async function main() {
     // Message handler
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text;
+      const userName = ctx.from?.first_name || "anon";
+      
+      // Log user question
+      console.log(`\n📨 User (${userName}): ${text}`);
+      
       const intent = parseNaturalLanguage(text);
 
       switch (intent.action) {
@@ -690,18 +695,23 @@ async function main() {
         default: {
           // Route to LLM brain — it knows all 50+ skills
           if (aibingwa.isBrainOnline()) {
-            await ctx.reply("🧠 Thinking...");
+            // Show typing indicator
+            await ctx.api.sendChatAction(ctx.chat.id, "typing");
             try {
               const response = await aibingwa.processMessage(
                 ctx.chat.id.toString(),
                 ctx.from?.first_name || "anon",
                 text,
               );
+              // Log response
+              console.log(`🤖 Bot: ${response.substring(0, 200)}${response.length > 200 ? "..." : ""}\n`);
+              
               await ctx.reply(response, { parse_mode: "Markdown" }).catch(() => {
                 // Fallback without markdown if parsing fails
                 ctx.reply(response);
               });
             } catch (err: any) {
+              console.log(`❌ Error: ${err.message}\n`);
               await ctx.reply(`❌ Error: ${err.message}`);
             }
           } else {
