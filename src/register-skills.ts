@@ -373,6 +373,371 @@ export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): voi
     },
   });
 
+  registry.register({
+    name: "polymarket_bet",
+    description: "Place a bet on a Polymarket prediction market outcome",
+    category: "prediction",
+    parameters: [
+      { name: "market", type: "string", description: "The market/question to bet on", required: true },
+      { name: "outcome", type: "string", description: "The outcome to bet on (e.g., 'Yes', 'No')", required: true },
+      { name: "amount", type: "string", description: "Dollar amount to bet", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Bet $${params.amount} on ${params.outcome} for "${params.market}" on Polymarket`);
+      return result.success ? result.response || "Bet placed" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "polymarket_positions",
+    description: "View your current Polymarket positions and P&L",
+    category: "prediction",
+    parameters: [],
+    execute: async () => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt("Show my Polymarket positions and P&L");
+      return result.success ? result.response || "No positions" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ══════════════════════════════════════════════════════════
+  // OPENCLAW SKILLS — Leverage, Automation, NFTs, Token Deploy
+  // ══════════════════════════════════════════════════════════
+
+  // ── LEVERAGE TRADING (via Avantis on Base) ────────────────
+  registry.register({
+    name: "leverage_open",
+    description: "Open a leveraged position (long or short) on crypto, forex, or commodities via Avantis. Up to 50x crypto, 100x forex/commodities.",
+    category: "leverage",
+    parameters: [
+      { name: "direction", type: "string", description: "long or short", required: true },
+      { name: "asset", type: "string", description: "Asset to trade (e.g., ETH, BTC, SOL, Gold, EUR/USD)", required: true },
+      { name: "leverage", type: "string", description: "Leverage multiplier (e.g., 5, 10, 20)", required: true },
+      { name: "amount", type: "string", description: "Collateral amount in dollars (e.g., 50)", required: true },
+      { name: "stop_loss", type: "string", description: "Stop loss price or percentage (e.g., '$3000' or '10%')", required: false },
+      { name: "take_profit", type: "string", description: "Take profit price or percentage (e.g., '$4000' or '20%')", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      let prompt = `Open a ${params.leverage}x ${params.direction} on ${params.asset} with $${params.amount}`;
+      if (params.stop_loss) prompt += ` with stop loss at ${params.stop_loss}`;
+      if (params.take_profit) prompt += ` and take profit at ${params.take_profit}`;
+      const result = await bankrPrompt(prompt);
+      return result.success ? result.response || "Position opened" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "leverage_close",
+    description: "Close a leveraged position on Avantis",
+    category: "leverage",
+    parameters: [
+      { name: "asset", type: "string", description: "Asset to close (e.g., ETH, BTC)", required: true },
+      { name: "percentage", type: "string", description: "Percentage to close (default 100 for full close)", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const pct = params.percentage || "100";
+      const result = await bankrPrompt(`Close ${pct}% of my ${params.asset} position on Avantis`);
+      return result.success ? result.response || "Position closed" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "leverage_positions",
+    description: "View all open leveraged positions on Avantis with P&L",
+    category: "leverage",
+    parameters: [],
+    execute: async () => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt("Show my Avantis positions with P&L, entry price, liquidation price, and current value");
+      return result.success ? result.response || "No positions" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── AUTOMATION SKILLS (DCA, Limit Orders, Stop Loss) ──────
+  registry.register({
+    name: "set_limit_order",
+    description: "Set a limit order to buy or sell a token at a target price",
+    category: "automation",
+    parameters: [
+      { name: "action", type: "string", description: "buy or sell", required: true },
+      { name: "token", type: "string", description: "Token symbol (e.g., ETH, PEPE)", required: true },
+      { name: "price", type: "string", description: "Target price to execute at (e.g., '$3000')", required: true },
+      { name: "amount", type: "string", description: "Amount or dollar value (e.g., '$100' or '0.5 ETH')", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      let prompt = `Set a limit order to ${params.action} ${params.token} at ${params.price}`;
+      if (params.amount) prompt += ` for ${params.amount}`;
+      const result = await bankrPrompt(prompt);
+      return result.success ? result.response || "Limit order set" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "set_stop_loss_order",
+    description: "Set a stop loss order to automatically sell a token if price drops to a level",
+    category: "automation",
+    parameters: [
+      { name: "token", type: "string", description: "Token symbol (e.g., ETH, PEPE)", required: true },
+      { name: "price_or_pct", type: "string", description: "Stop price or percentage drop (e.g., '$2500' or '20%')", required: true },
+      { name: "amount", type: "string", description: "Amount to sell (e.g., '50%' or 'all')", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const amt = params.amount || "all";
+      const result = await bankrPrompt(`Set stop loss for ${amt} of my ${params.token} at ${params.price_or_pct}`);
+      return result.success ? result.response || "Stop loss set" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "setup_dca",
+    description: "Set up Dollar Cost Averaging — automatically buy a token at regular intervals (hourly, daily, weekly, monthly)",
+    category: "automation",
+    parameters: [
+      { name: "token", type: "string", description: "Token to DCA into (e.g., ETH, BTC, SOL)", required: true },
+      { name: "amount", type: "string", description: "Dollar amount per purchase (e.g., '50')", required: true },
+      { name: "interval", type: "string", description: "Frequency: hourly, daily, weekly, monthly", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`DCA $${params.amount} into ${params.token} every ${params.interval}`);
+      return result.success ? result.response || "DCA set up" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "setup_twap",
+    description: "Set up TWAP (Time-Weighted Average Price) — spread a large order over time to reduce slippage",
+    category: "automation",
+    parameters: [
+      { name: "action", type: "string", description: "buy or sell", required: true },
+      { name: "token", type: "string", description: "Token symbol", required: true },
+      { name: "amount", type: "string", description: "Total dollar amount (e.g., '1000')", required: true },
+      { name: "duration", type: "string", description: "Time to spread over (e.g., '4 hours', '24 hours')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`TWAP: ${params.action} $${params.amount} of ${params.token} over ${params.duration}`);
+      return result.success ? result.response || "TWAP set up" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "view_automations",
+    description: "View all active automations — limit orders, stop losses, DCA, TWAP, scheduled commands",
+    category: "automation",
+    parameters: [],
+    execute: async () => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt("Show all my active automations, limit orders, stop losses, DCA schedules, and TWAP orders");
+      return result.success ? result.response || "No active automations" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "cancel_automation",
+    description: "Cancel an active automation (limit order, stop loss, DCA, etc.)",
+    category: "automation",
+    parameters: [
+      { name: "description", type: "string", description: "Describe which automation to cancel (e.g., 'my ETH DCA', 'stop loss on PEPE')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Cancel my automation: ${params.description}`);
+      return result.success ? result.response || "Cancelled" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── NFT SKILLS ────────────────────────────────────────────
+  registry.register({
+    name: "nft_browse",
+    description: "Browse NFT collections — check floor prices, listings, and trending collections",
+    category: "nft",
+    parameters: [
+      { name: "query", type: "string", description: "Collection name or search query (e.g., 'Pudgy Penguins floor price', 'trending NFTs on Base')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`NFT: ${params.query}`);
+      return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "nft_buy",
+    description: "Buy an NFT from a collection (cheapest listing or specific token ID)",
+    category: "nft",
+    parameters: [
+      { name: "collection", type: "string", description: "Collection name (e.g., 'Pudgy Penguins', 'Based Punks')", required: true },
+      { name: "token_id", type: "string", description: "Specific token ID to buy (leave empty for cheapest)", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const prompt = params.token_id
+        ? `Buy ${params.collection} #${params.token_id}`
+        : `Buy the cheapest ${params.collection}`;
+      const result = await bankrPrompt(prompt);
+      return result.success ? result.response || "NFT purchased" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "nft_portfolio",
+    description: "View your NFT portfolio — all NFTs you own across chains",
+    category: "nft",
+    parameters: [],
+    execute: async () => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt("Show my NFTs across all chains with floor prices and total value");
+      return result.success ? result.response || "No NFTs" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── TOKEN DEPLOYMENT SKILLS ───────────────────────────────
+  registry.register({
+    name: "deploy_token_base",
+    description: "Deploy a new ERC-20 token on Base via Clanker with custom name, symbol, and metadata",
+    category: "token_deploy",
+    parameters: [
+      { name: "name", type: "string", description: "Token name (e.g., 'MoonCoin')", required: true },
+      { name: "symbol", type: "string", description: "Token symbol (e.g., 'MOON')", required: true },
+      { name: "description", type: "string", description: "Brief description of the token", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      let prompt = `Deploy a token called ${params.name} with symbol ${params.symbol} on Base`;
+      if (params.description) prompt += `. Description: ${params.description}`;
+      const result = await bankrPrompt(prompt);
+      return result.success ? result.response || "Token deployed" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "deploy_token_solana",
+    description: "Launch a new SPL token on Solana via Raydium LaunchLab with bonding curve",
+    category: "token_deploy",
+    parameters: [
+      { name: "name", type: "string", description: "Token name", required: true },
+      { name: "symbol", type: "string", description: "Token symbol", required: true },
+      { name: "fee_recipient", type: "string", description: "Optional fee recipient address or social handle", required: false },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      let prompt = `Launch a token called ${params.name} with symbol ${params.symbol} on Solana`;
+      if (params.fee_recipient) prompt += ` and give fees to ${params.fee_recipient}`;
+      const result = await bankrPrompt(prompt);
+      return result.success ? result.response || "Token launched" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "claim_token_fees",
+    description: "Claim creator fees from a deployed token (Base via Clanker or Solana via LaunchLab)",
+    category: "token_deploy",
+    parameters: [
+      { name: "token", type: "string", description: "Token name or symbol to claim fees for", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Claim my fees for ${params.token}`);
+      return result.success ? result.response || "Fees claimed" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── CROSS-CHAIN SKILLS ────────────────────────────────────
+  registry.register({
+    name: "bridge_tokens",
+    description: "Bridge tokens between chains (Base, Ethereum, Polygon, Solana, Unichain). Move funds cross-chain.",
+    category: "cross_chain",
+    parameters: [
+      { name: "amount", type: "string", description: "Amount to bridge (e.g., '100')", required: true },
+      { name: "token", type: "string", description: "Token to bridge (e.g., 'USDC', 'ETH')", required: true },
+      { name: "from_chain", type: "string", description: "Source chain (e.g., 'Polygon', 'Ethereum')", required: true },
+      { name: "to_chain", type: "string", description: "Destination chain (e.g., 'Base', 'Solana')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Bridge ${params.amount} ${params.token} from ${params.from_chain} to ${params.to_chain}`);
+      return result.success ? result.response || "Bridge initiated" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "multi_chain_portfolio",
+    description: "View portfolio across ALL chains — Base, Ethereum, Polygon, Solana with USD values",
+    category: "cross_chain",
+    parameters: [],
+    execute: async () => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt("Show my complete portfolio across all chains with USD values and total");
+      return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── TECHNICAL ANALYSIS & MARKET INTELLIGENCE ──────────────
+  registry.register({
+    name: "technical_analysis",
+    description: "Run technical analysis on a token — RSI, MACD, support/resistance, trend, chart patterns",
+    category: "research",
+    parameters: [
+      { name: "token", type: "string", description: "Token to analyze (e.g., ETH, BTC, SOL)", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Do a full technical analysis on ${params.token}: RSI, MACD, support/resistance levels, trend direction, and trading recommendation. Be concise.`);
+      return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "compare_tokens",
+    description: "Compare two or more tokens side-by-side — price, market cap, volume, performance",
+    category: "research",
+    parameters: [
+      { name: "tokens", type: "string", description: "Tokens to compare separated by 'vs' (e.g., 'ETH vs SOL', 'PEPE vs DEGEN vs BRETT')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Compare ${params.tokens}: price, market cap, 24h volume, 24h change, and which is the better trade right now`);
+      return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+    },
+  });
+
+  registry.register({
+    name: "social_sentiment",
+    description: "Check social sentiment and buzz for a token — Twitter, Farcaster, community activity",
+    category: "research",
+    parameters: [
+      { name: "token", type: "string", description: "Token to check sentiment for", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`What's the social sentiment for ${params.token}? Check Twitter buzz, community activity, and overall market mood. Is it bullish or bearish?`);
+      return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+    },
+  });
+
+  // ── TRANSFER SKILLS (Enhanced) ────────────────────────────
+  registry.register({
+    name: "send_to_social",
+    description: "Send tokens to a social handle — Twitter username, Farcaster, Telegram handle, or ENS name",
+    category: "transfer",
+    parameters: [
+      { name: "amount", type: "string", description: "Amount to send (e.g., '10')", required: true },
+      { name: "token", type: "string", description: "Token to send (e.g., 'USDC', 'ETH')", required: true },
+      { name: "recipient", type: "string", description: "Social handle, ENS, or address (e.g., '@vitalik', 'vitalik.eth')", required: true },
+    ],
+    execute: async (params) => {
+      if (!isBankrConfigured()) return "Bankr API not configured";
+      const result = await bankrPrompt(`Send ${params.amount} ${params.token} to ${params.recipient}`);
+      return result.success ? result.response || "Sent" : `Failed: ${result.error}`;
+    },
+  });
+
   // ── GENERAL BANKR SKILL ──────────────────────────────────
   registry.register({
     name: "bankr_prompt",

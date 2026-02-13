@@ -13,7 +13,7 @@ export interface SkillParameter {
 export interface Skill {
   name: string;
   description: string;
-  category: "wallet" | "trading" | "research" | "social" | "utility" | "defi" | "prediction";
+  category: "wallet" | "trading" | "research" | "social" | "utility" | "defi" | "prediction" | "leverage" | "automation" | "nft" | "token_deploy" | "cross_chain" | "transfer";
   parameters: SkillParameter[];
   execute: (params: Record<string, any>) => Promise<string>;
 }
