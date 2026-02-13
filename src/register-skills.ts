@@ -1,6 +1,7 @@
 import { SkillRegistry, Skill } from "./skills.js";
 import { AgentKit } from "@coinbase/agentkit";
 import { getPerformanceSummary, getOpenPositions, getTradeHistory, loadMemory } from "./memory.js";
+import { BankrX402Client } from "./bankr-x402.js";
 
 // ============================================================
 // REGISTER ALL SKILLS — Called once at startup
@@ -34,6 +35,7 @@ interface SkillDeps {
   tokenRegistry: Record<string, { symbol: string; name: string; address: string; decimals: number; pythFeedId?: string }>;
   isBankrConfigured: () => boolean;
   trader: { scanMarket: () => Promise<string>; toggleAutoTrade: (on: boolean) => string; updateSettings: (u: any) => string; getMemory: () => any };
+  x402Client?: BankrX402Client;
 }
 
 export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): void {
@@ -752,6 +754,62 @@ export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): voi
       return result.success ? result.response || "No data" : `Failed: ${result.error}`;
     },
   });
+
+  // ══════════════════════════════════════════════════════════
+  // SELF-SUSTAINING AGENT SKILLS — Revenue & Cost Tracking
+  // ══════════════════════════════════════════════════════════
+
+  if (deps.x402Client && deps.x402Client.isAvailable()) {
+    registry.register({
+      name: "x402_prompt",
+      description: "Send a prompt via Bankr x402 SDK (micropayment-based, $0.10/request). Use when API key mode fails or for direct SDK access.",
+      category: "defi",
+      parameters: [
+        { name: "prompt", type: "string", description: "The prompt to send via x402", required: true },
+      ],
+      execute: async (params) => {
+        const result = await deps.x402Client!.prompt(params.prompt);
+        return result.success ? result.response || "No data" : `Failed: ${result.error}`;
+      },
+    });
+  }
+
+  if (deps.x402Client) {
+    registry.register({
+      name: "revenue_report",
+      description: "Show the agent's revenue vs cost report — total earned, total spent on API calls, net P&L, sustainability status",
+      category: "utility",
+      parameters: [],
+      execute: async () => deps.x402Client!.getRevenueReport(),
+    });
+
+    registry.register({
+      name: "set_daily_budget",
+      description: "Set the agent's daily API spending budget in dollars. Agent stops making x402 requests when budget is exceeded.",
+      category: "utility",
+      parameters: [
+        { name: "amount", type: "number", description: "Daily budget in dollars (e.g., 5 for $5/day)", required: true },
+      ],
+      execute: async (params) => {
+        deps.x402Client!.setDailyBudget(params.amount);
+        return `✅ Daily budget set to $${params.amount}. Agent will pause x402 requests when this limit is reached.`;
+      },
+    });
+
+    registry.register({
+      name: "track_trade_revenue",
+      description: "Record revenue earned from a trade (profit). Used to track if the agent is self-sustaining.",
+      category: "utility",
+      parameters: [
+        { name: "amount", type: "number", description: "Dollar amount of profit earned", required: true },
+        { name: "source", type: "string", description: "Source of revenue (e.g., 'PEPE trade', 'Polymarket win')", required: true },
+      ],
+      execute: async (params) => {
+        deps.x402Client!.trackRevenue(params.amount);
+        return `✅ Recorded $${params.amount} revenue from: ${params.source}. ${deps.x402Client!.isSustainable() ? "🟢 Agent is self-sustaining!" : "🔴 Not yet sustainable — keep trading!"}`;
+      },
+    });
+  }
 
   console.log(`✅ Registered ${registry.getAll().length} skills`);
 }

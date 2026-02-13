@@ -21,6 +21,7 @@ import { loadMemory, getPerformanceSummary, getOpenPositions, getTradeHistory } 
 import { SkillRegistry } from "./skills.js";
 import { AgentBrain } from "./brain.js";
 import { registerAllSkills } from "./register-skills.js";
+import { BankrX402Client } from "./bankr-x402.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1065,6 +1066,9 @@ async function main() {
     const skillRegistry = new SkillRegistry();
     let brain: AgentBrain | null = null;
 
+    // Initialize x402 client for self-sustaining micropayments
+    const x402Client = new BankrX402Client();
+
     registerAllSkills(skillRegistry, {
       agent,
       bankrPrompt,
@@ -1082,6 +1086,7 @@ async function main() {
       tokenRegistry: TOKEN_REGISTRY,
       isBankrConfigured,
       trader,
+      x402Client,
     });
 
     if (process.env.OPENAI_API_KEY) {
