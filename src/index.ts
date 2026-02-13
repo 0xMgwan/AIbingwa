@@ -20,11 +20,7 @@ import "dotenv/config";
 // Import from aibingwa-agent package
 import {
   AgentBingwa,
-  SkillRegistry,
-  loadMemory,
-  getPerformanceSummary,
-  getOpenPositions,
-  getTradeHistory,
+  registerAllSkills,
 } from "aibingwa-agent";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -500,47 +496,30 @@ async function main() {
       },
     });
 
-    // Register custom skills for this bot
-    aibingwa.skills.register({
-      name: "get_wallet_balance",
-      description: "Get the balance of a specific token in the wallet",
-      category: "wallet",
-      parameters: [
-        { name: "token", type: "string", description: "Token symbol (eth, usdc, weth, etc)", required: true },
-      ],
-      execute: async (params: any) => {
-        const token = resolveToken(params.token);
-        if (!token) return `Unknown token: ${params.token}`;
-        const walletAddr = await getWalletAddress(agent);
-        if (token.symbol === "ETH") {
-          const bal = await getEthBalance(walletAddr);
-          return `${token.symbol}: ${parseFloat(bal).toFixed(6)}`;
-        }
-        const bal = await getTokenBalance(token.address, walletAddr, token.decimals);
-        return `${token.symbol}: ${parseFloat(bal).toFixed(6)}`;
-      },
-    });
-
-    aibingwa.skills.register({
-      name: "swap_tokens",
-      description: "Swap one token for another using AgentKit",
-      category: "trading",
-      parameters: [
-        { name: "fromToken", type: "string", description: "Source token symbol", required: true },
-        { name: "toToken", type: "string", description: "Destination token symbol", required: true },
-        { name: "amount", type: "string", description: "Amount to swap", required: true },
-      ],
-      execute: async (params: any) => {
-        const from = resolveToken(params.fromToken);
-        const to = resolveToken(params.toToken);
-        if (!from || !to) return "Invalid token symbols";
-        const result = await executeAction(agent, "CdpSmartWalletActionProvider_swap", {
-          fromToken: from.address,
-          toToken: to.address,
-          fromAmount: params.amount,
-        });
+    // Register ALL skills from the package (Bankr, trading, research, leverage, NFT, etc.)
+    registerAllSkills(aibingwa.skills, {
+      bankrPrompt: aibingwa.getBankrPrompt(),
+      executeAction: (actionName: string, args?: Record<string, any>) => executeAction(agent, actionName, args),
+      getWalletAddress: () => getWalletAddress(agent),
+      getEthBalance,
+      getTokenBalance,
+      resolveAddress,
+      getPrice: async (symbol: string) => {
+        const token = resolveToken(symbol);
+        if (!token || !token.pythFeedId) return `Unknown token: ${symbol}`;
+        const result = await executeAction(agent, "PythActionProvider_fetch_price", { priceFeedID: token.pythFeedId });
         return result;
       },
+      tokenRegistry: TOKEN_REGISTRY,
+      isBankrConfigured: () => !!process.env.BANKR_API_KEY,
+      trader: aibingwa.trader ? {
+        scanMarket: () => aibingwa.trader!.scanMarket(),
+        toggleAutoTrade: (on: boolean) => aibingwa.trader!.toggleAutoTrade(on),
+        updateSettings: (u: any) => aibingwa.trader!.updateSettings(u),
+        getMemory: () => aibingwa.trader!.getMemory(),
+      } : undefined,
+      x402Client: aibingwa.x402Client || undefined,
+      twitterClient: aibingwa.twitterClient || undefined,
     });
 
     // Commands
