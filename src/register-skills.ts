@@ -14,6 +14,7 @@ type BankrPromptFn = (prompt: string, threadId?: string) => Promise<{
   status: string;
   response?: string;
   error?: string;
+  transactions?: any[];
 }>;
 
 type ExecuteActionFn = (agent: AgentKit, actionName: string, args?: Record<string, any>) => Promise<string>;
@@ -602,7 +603,7 @@ export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): voi
   // ── TOKEN DEPLOYMENT SKILLS ───────────────────────────────
   registry.register({
     name: "deploy_token_base",
-    description: "Deploy a new ERC-20 token on Base via Clanker with custom name, symbol, and metadata",
+    description: "Deploy a new ERC-20 token on Base via Clanker with custom name, symbol, and metadata. Requires x402 wallet for on-chain execution.",
     category: "token_deploy",
     parameters: [
       { name: "name", type: "string", description: "Token name (e.g., 'MoonCoin')", required: true },
@@ -610,11 +611,27 @@ export function registerAllSkills(registry: SkillRegistry, deps: SkillDeps): voi
       { name: "description", type: "string", description: "Brief description of the token", required: false },
     ],
     execute: async (params) => {
-      if (!isBankrConfigured()) return "Bankr API not configured";
       let prompt = `Deploy a token called ${params.name} with symbol ${params.symbol} on Base`;
       if (params.description) prompt += `. Description: ${params.description}`;
+
+      // Try x402 first (can actually execute on-chain transactions)
+      if (deps.x402Client && deps.x402Client.isAvailable()) {
+        console.log(`🚀 Deploying token via x402: ${params.name} (${params.symbol})`);
+        const result = await deps.x402Client.prompt(prompt);
+        if (result.success) {
+          return result.response || "Token deployment submitted via x402";
+        }
+        console.log(`⚠️ x402 deploy failed: ${result.error}, trying API key mode...`);
+      }
+
+      // Fallback to API key mode
+      if (!isBankrConfigured()) return "Token deployment requires x402 wallet (X402_PRIVATE_KEY) or Bankr API key. x402 is recommended for on-chain actions.";
       const result = await bankrPrompt(prompt);
-      return result.success ? result.response || "Token deployed" : `Failed: ${result.error}`;
+      if (result.success) {
+        const hasTx = result.transactions && result.transactions.length > 0;
+        return (result.response || "Token deployment submitted") + (hasTx ? `\n\n📋 ${result.transactions!.length} transaction(s) returned — check Bankr dashboard to confirm.` : "\n\n⚠️ No transactions returned. Token deployment may need to be done via Bankr's Telegram bot or x402 SDK directly.");
+      }
+      return `Failed: ${result.error}`;
     },
   });
 

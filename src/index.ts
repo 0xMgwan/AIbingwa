@@ -562,6 +562,7 @@ interface BankrJobResult {
   status: string;
   response?: string;
   error?: string;
+  transactions?: any[];
 }
 
 async function bankrPrompt(prompt: string, threadId?: string): Promise<BankrJobResult> {
@@ -609,12 +610,17 @@ async function bankrPrompt(prompt: string, threadId?: string): Promise<BankrJobR
       const pollData = await pollRes.json() as any;
 
       if (pollData.status === "completed") {
+        // Log transaction data if present (for debugging)
+        if (pollData.transactions && pollData.transactions.length > 0) {
+          console.log(`📋 Bankr returned ${pollData.transactions.length} transaction(s) for job ${jobId}`);
+        }
         return {
           success: true,
           jobId,
           threadId: resultThreadId,
           status: "completed",
           response: pollData.response || "No response",
+          transactions: pollData.transactions || [],
         };
       }
 
