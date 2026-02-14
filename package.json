@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@coinbase/agentkit": "latest",
-    "aibingwa-agent": "github:0xMgwan/aibingwa-npm-package#dfa9a7a5c77169eeb708c82bd664fbd031188539",
+    "aibingwa-agent": "github:0xMgwan/aibingwa-npm-package#cf3fffe0c1eda905c8a2226479d2d58b4d148923",
     "dotenv": "^16.4.5",
     "grammy": "^1.30.0"
   },
