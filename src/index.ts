@@ -556,29 +556,43 @@ async function main() {
         if (!categories[skill.category]) {
           categories[skill.category] = [];
         }
-        categories[skill.category].push(`• ${skill.name} — ${skill.description}`);
+        categories[skill.category].push(`• ${skill.name}`);
       }
       
-      let skillsText = `🧠 **Available Skills (${allSkills.length} total)**\n\n`;
+      // Send overview first
+      let overviewText = `🧠 **Available Skills (${allSkills.length} total)**\n\n`;
       
-      for (const [category, skills] of Object.entries(categories).sort()) {
-        skillsText += `**${category.toUpperCase()}** (${skills.length})\n`;
-        skillsText += skills.slice(0, 5).join("\n");
-        if (skills.length > 5) {
-          skillsText += `\n... and ${skills.length - 5} more\n`;
-        }
-        skillsText += "\n";
+      const sortedCategories = Object.entries(categories).sort();
+      for (const [category, skills] of sortedCategories) {
+        overviewText += `**${category.toUpperCase()}**: ${skills.length} skills\n`;
       }
       
-      skillsText += `💡 **Try asking naturally:**\n` +
+      overviewText += `\n💡 **Skill Sources:**\n` +
+        `• **Bankr**: Trading, DeFi, leverage, portfolio\n` +
+        `• **OpenClaw**: Botchan, Clanker, Endaoment, ENS, Veil\n` +
+        `• **Automation**: Email, booking, cron jobs, reminders\n` +
+        `• **Utility**: Weather, news, file management, AI analysis\n\n` +
+        `**Try asking naturally:**\n` +
         `• "Send email to john@company.com"\n` +
-        `• "Book a hotel in New York"\n` +
-        `• "Set up daily reminder at 9am"\n` +
-        `• "Deploy a token on Base"\n` +
-        `• "Donate to charity"\n` +
+        `• "Deploy a token called MyToken"\n` +
+        `• "Donate $10 to charity"\n` +
+        `• "Book hotel in NYC"\n` +
         `• "Check my portfolio"`;
       
-      await ctx.reply(skillsText, { parse_mode: "Markdown" });
+      await ctx.reply(overviewText, { parse_mode: "Markdown" });
+      
+      // Send detailed categories in chunks
+      for (const [category, skills] of sortedCategories.slice(0, 3)) {
+        const categoryText = `**${category.toUpperCase()} SKILLS:**\n` + 
+          skills.slice(0, 10).join("\n") +
+          (skills.length > 10 ? `\n... and ${skills.length - 10} more` : "");
+        
+        try {
+          await ctx.reply(categoryText, { parse_mode: "Markdown" });
+        } catch (err) {
+          await ctx.reply(categoryText);
+        }
+      }
     });
 
     bot.command("openclaw", async (ctx) => {
