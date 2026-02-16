@@ -540,9 +540,73 @@ async function main() {
         `• "Send 10 USDC to vitalik.eth"\n\n` +
         `*Prices:*\n` +
         `• "Price of ETH"\n\n` +
+        `*Skills & Automation:*\n` +
+        `• /skills — See all 90+ available skills\n` +
+        `• /openclaw — OpenClaw ecosystem commands\n\n` +
         `*AI Agent:*\n` +
         `• Just chat naturally — I'll figure it out! 🧠`;
       await ctx.reply(help, { parse_mode: "Markdown" });
+    });
+
+    bot.command("skills", async (ctx) => {
+      const allSkills = aibingwa.skills.getAll();
+      const categories: Record<string, string[]> = {};
+      
+      for (const skill of allSkills) {
+        if (!categories[skill.category]) {
+          categories[skill.category] = [];
+        }
+        categories[skill.category].push(`• ${skill.name} — ${skill.description}`);
+      }
+      
+      let skillsText = `🧠 **Available Skills (${allSkills.length} total)**\n\n`;
+      
+      for (const [category, skills] of Object.entries(categories).sort()) {
+        skillsText += `**${category.toUpperCase()}** (${skills.length})\n`;
+        skillsText += skills.slice(0, 5).join("\n");
+        if (skills.length > 5) {
+          skillsText += `\n... and ${skills.length - 5} more\n`;
+        }
+        skillsText += "\n";
+      }
+      
+      skillsText += `💡 **Try asking naturally:**\n` +
+        `• "Send email to john@company.com"\n` +
+        `• "Book a hotel in New York"\n` +
+        `• "Set up daily reminder at 9am"\n` +
+        `• "Deploy a token on Base"\n` +
+        `• "Donate to charity"\n` +
+        `• "Check my portfolio"`;
+      
+      await ctx.reply(skillsText, { parse_mode: "Markdown" });
+    });
+
+    bot.command("openclaw", async (ctx) => {
+      const openclawText = `🌐 **OpenClaw Ecosystem Skills**\n\n` +
+        `**Agent Messaging:**\n` +
+        `• Botchan — Post messages to agent feeds\n` +
+        `• Send to other agents onchain\n\n` +
+        `**Token Operations:**\n` +
+        `• Clanker — Deploy ERC20 tokens with Uniswap V4\n` +
+        `• Advanced vesting & airdrops\n\n` +
+        `**Charity & Social:**\n` +
+        `• Endaoment — Donate to 501(c)(3) nonprofits\n` +
+        `• Support causes onchain\n\n` +
+        `**Identity & Privacy:**\n` +
+        `• ENS — Domain name operations\n` +
+        `• Veil — Private/shielded transactions\n\n` +
+        `**Gaming & Auctions:**\n` +
+        `• QRCoin — QR code auctions\n` +
+        `• Yoink — Capture-the-flag gaming\n\n` +
+        `**Agent Registration:**\n` +
+        `• ERC-8004 — Register agent identity\n\n` +
+        `**Try asking:**\n` +
+        `• "Deploy a token called MyToken"\n` +
+        `• "Donate $10 to GiveDirectly"\n` +
+        `• "Post to Botchan feed"\n` +
+        `• "Send private transaction via Veil"`;
+      
+      await ctx.reply(openclawText, { parse_mode: "Markdown" });
     });
 
     bot.command("balance", async (ctx) => {
