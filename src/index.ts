@@ -575,7 +575,7 @@ async function main() {
       
       try {
         // Route ALL messages through the agent's brain
-        // This handles conversation context, follow-ups, and all 50+ skills
+        // This handles conversation context, follow-ups, and all 90+ skills including dynamic credentials
         const response = await aibingwa.processMessage(
           ctx.chat.id.toString(),
           userName,
