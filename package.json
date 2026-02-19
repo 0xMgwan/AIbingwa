@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsup",
     "start": "node --experimental-require-module build/index.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "railway:build": "rm -rf node_modules/aibingwa-agent && npm install && npm run build"
   },
   "dependencies": {
     "@coinbase/agentkit": "latest",
