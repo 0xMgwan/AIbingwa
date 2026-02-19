@@ -479,9 +479,9 @@ async function main() {
     // Session middleware
     bot.use(session({ initial: () => ({ messageCount: 0 }) }));
 
-    // Initialize AIBINGWA agent
+    // Initialize AIBINGWA agent with Claude Sonnet 3.5
     const aibingwa = new AgentBingwa({
-      openaiApiKey: process.env.OPENAI_API_KEY,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       bankrApiKey: process.env.BANKR_API_KEY,
       x402PrivateKey: process.env.X402_PRIVATE_KEY,
       dataDir: join(__dirname, "..", "data"),
